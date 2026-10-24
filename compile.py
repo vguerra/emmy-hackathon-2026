@@ -7,8 +7,9 @@ from pathlib import Path
 
 from emmy.compiler.graph import Graph
 from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, Var
-from emmy.compiler.ir.kernel.ir import KernelOp, Tile
-from emmy.compiler.ir.stmt.leaves import Assign, Let, Load, Write
+from emmy.compiler.ir.kernel.ir import KernelOp, Smem, Sync, Tile, TreeHalve, WarpShuffle
+from emmy.compiler.ir.stmt.blocks import Cond, StridedLoop
+from emmy.compiler.ir.stmt.leaves import Accum, Assign, Let, Load, Write
 
 
 def load_ir(ir_path: str) -> tuple[Graph, dict]:
@@ -63,6 +64,9 @@ class PtxEmitter:
         self.reg_counts = {"p": 0, "f": 0, "r": 0, "rd": 0}
         self.buffers = {}                               # IR buffer name -> global pointer reg
         self.vars = {}                                  # IR axis / SSA name -> register
+        self.smem_base = {}                             # shared array name -> u32 base address reg
+        self.smem_shapes = {}                           # shared array name -> extents
+        self.label_count = 0
 
     def reg(self, kind: str) -> str:
         self.reg_counts[kind] += 1
@@ -73,6 +77,10 @@ class PtxEmitter:
 
     def label(self, name: str) -> None:
         self.lines.append(f"{name}:")
+
+    def new_label(self, prefix: str) -> str:
+        self.label_count += 1
+        return f"{prefix}_{self.label_count}"
 
 
 def find_tile(kernel: KernelOp) -> Tile:
@@ -101,6 +109,15 @@ def emit_prologue(em: PtxEmitter, tile: Tile, arg_order: list[str]) -> None:
     em.emit(f"mov.u32 {ctaid}, %ctaid.x;")
     em.emit(f"mov.u32 {ntid}, %ntid.x;")
     em.emit(f"mad.lo.s32 {gid}, {ctaid}, {ntid}, {tid};")
+
+    # Cooperative tiles shuffle and barrier below the guard, so no thread may be cut off.
+    if tile.block_threads and tile.n_elements % tile.block_threads:
+        raise NotImplementedError("cooperative Tile whose N is not a multiple of block_threads")
+
+    # lane / warp are free variables of the reduction statements
+    em.vars["lane"], em.vars["warp"] = em.reg("r"), em.reg("r")
+    em.emit(f"and.b32 {em.vars['lane']}, {tid}, 31;")
+    em.emit(f"shr.u32 {em.vars['warp']}, {tid}, 5;")
 
     # The launch may carry more threads than cells; this guard is not in the IR.
     guard = em.reg("p")
@@ -184,7 +201,24 @@ def emit_flat_offset(em: PtxEmitter, index: tuple, shape: list[int]) -> str:
     return offset
 
 
+def buffer_shape(em: PtxEmitter, arg_types: dict, buffer: str) -> list[int]:
+    return list(em.smem_shapes[buffer]) if buffer in em.smem_base else arg_types[buffer][1]
+
+
+def mem_space(em: PtxEmitter, buffer: str) -> str:
+    return ".shared" if buffer in em.smem_base else ".global"
+
+
 def emit_address(em: PtxEmitter, buffer: str, offset: str, elem_bytes: int) -> str:
+    if buffer in em.smem_base:                          # shared addresses are 32-bit
+        addr = em.reg("r")
+        if is_imm(offset):
+            em.emit(f"add.s32 {addr}, {em.smem_base[buffer]}, {int(offset) * elem_bytes};")
+        else:
+            scaled = em.reg("r")
+            em.emit(f"mul.lo.s32 {scaled}, {offset}, {elem_bytes};")
+            em.emit(f"add.s32 {addr}, {em.smem_base[buffer]}, {scaled};")
+        return addr
     addr = em.reg("rd")
     if is_imm(offset):
         em.emit(f"add.s64 {addr}, {em.buffers[buffer]}, {int(offset) * elem_bytes};")
@@ -204,13 +238,14 @@ def vector_suffix(n: int) -> str:
 def emit_load(em: PtxEmitter, stmt: Load, arg_types: dict) -> None:
     if stmt.dtype.name != "f32":
         raise NotImplementedError(f"load dtype {stmt.dtype.name}")
-    shape = arg_types[stmt.input][1]
+    shape = buffer_shape(em, arg_types, stmt.input)
     addr = emit_address(em, stmt.input, emit_flat_offset(em, stmt.index, shape), 4)
     regs = [em.reg("f") for _ in stmt.names]
     for name, reg in zip(stmt.names, regs):
         em.vars[name] = reg
-    em.emit(f"ld.global{vector_suffix(len(regs))}.f32 {{{', '.join(regs)}}}, [{addr}];"
-            if len(regs) > 1 else f"ld.global.f32 {regs[0]}, [{addr}];")
+    space = mem_space(em, stmt.input)
+    em.emit(f"ld{space}{vector_suffix(len(regs))}.f32 {{{', '.join(regs)}}}, [{addr}];"
+            if len(regs) > 1 else f"ld{space}.f32 {regs[0]}, [{addr}];")
 
 
 def emit_assign(em: PtxEmitter, stmt: Assign) -> None:
@@ -244,21 +279,149 @@ def emit_let(em: PtxEmitter, stmt: Let) -> None:
 
 
 def emit_write(em: PtxEmitter, stmt: Write, arg_types: dict) -> None:
-    shape = arg_types[stmt.output][1]
+    shape = buffer_shape(em, arg_types, stmt.output)
     addr = emit_address(em, stmt.output, emit_flat_offset(em, stmt.index, shape), 4)
     values = [em.vars[v] for v in stmt.values]
+    space = mem_space(em, stmt.output)
     if stmt.atomic:                                     # no vector red on sm_89: one per element
         for i, value in enumerate(values):
             em.emit(f"red.global.add.f32 [{addr}+{4 * i}], {value};")
     elif len(values) > 1:
-        em.emit(f"st.global{vector_suffix(len(values))}.f32 [{addr}], {{{', '.join(values)}}};")
+        em.emit(f"st{space}{vector_suffix(len(values))}.f32 [{addr}], {{{', '.join(values)}}};")
     else:
-        em.emit(f"st.global.f32 [{addr}], {values[0]};")
+        em.emit(f"st{space}.f32 [{addr}], {values[0]};")
 
 
-def emit_body(em: PtxEmitter, tile: Tile, arg_types: dict) -> None:
-    """Visit tile.body statement by statement."""
-    for stmt in tile.body:
+PRED_CMPS = {"<": "lt", "<=": "le", ">": "gt", ">=": "ge", "==": "eq", "!=": "ne"}
+
+
+def emit_pred(em: PtxEmitter, expr: Expr) -> str:
+    """Compile a predicate expression into a predicate register."""
+    if isinstance(expr, BinaryExpr) and expr.op in PRED_CMPS:
+        left, right = emit_int_expr(em, expr.left), emit_int_expr(em, expr.right)
+        pred = em.reg("p")
+        em.emit(f"setp.{PRED_CMPS[expr.op]}.s32 {pred}, {left}, {right};")
+        return pred
+    if isinstance(expr, BinaryExpr) and expr.op in ("&&", "||"):
+        left, right = emit_pred(em, expr.left), emit_pred(em, expr.right)
+        pred = em.reg("p")
+        em.emit(f"{'and' if expr.op == '&&' else 'or'}.pred {pred}, {left}, {right};")
+        return pred
+    raise NotImplementedError(f"predicate {expr!r}")
+
+
+def emit_cond(em: PtxEmitter, stmt: Cond, arg_types: dict) -> None:
+    pred = emit_pred(em, stmt.cond)
+    end = em.new_label("ENDIF")
+    if not stmt.else_body:
+        em.emit(f"@!{pred} bra {end};")
+        emit_stmts(em, stmt.body, arg_types)
+    else:
+        other = em.new_label("ELSE")
+        em.emit(f"@!{pred} bra {other};")
+        emit_stmts(em, stmt.body, arg_types)
+        em.emit(f"bra {end};")
+        em.label(other)
+        emit_stmts(em, stmt.else_body, arg_types)
+    em.label(end)
+
+
+def emit_strided_loop(em: PtxEmitter, stmt: StridedLoop, arg_types: dict) -> None:
+    # The accumulators folded inside start at their identity each time the loop is entered.
+    for acc in stmt.body.iter_of_type(Accum):
+        if acc.base is not None:
+            raise NotImplementedError("Accum.base")
+        em.vars[acc.name] = em.reg("f")
+        em.emit(f"mov.f32 {em.vars[acc.name]}, {f32_imm(acc.op.identity)};")
+
+    index = em.reg("r")
+    em.emit(f"mov.s32 {index}, {emit_int_expr(em, stmt.start)};")
+    end = stmt.end if stmt.end is not None else Literal(stmt.axis.extent.as_static(), "int")
+    bound = emit_int_expr(em, end)
+    step = emit_int_expr(em, stmt.step)
+    top, done = em.new_label("LOOP"), em.new_label("LOOP_END")
+    em.vars[stmt.axis.name] = index
+
+    em.label(top)
+    pred = em.reg("p")
+    em.emit(f"setp.ge.s32 {pred}, {index}, {bound};")
+    em.emit(f"@{pred} bra {done};")
+    emit_stmts(em, stmt.body, arg_types)
+    em.emit(f"add.s32 {index}, {index}, {step};")
+    em.emit(f"bra {top};")
+    em.label(done)
+
+
+def emit_accum(em: PtxEmitter, stmt: Accum) -> None:
+    acc = em.vars[stmt.name]                            # in place: the register outlives the loop body
+    em.emit(f"{F32_BINOPS[stmt.op.name]} {acc}, {acc}, {em.vars[stmt.value]};")
+
+
+def emit_warp_shuffle(em: PtxEmitter, stmt: WarpShuffle) -> None:
+    """Butterfly over `length` lanes: fold in the value of lane ^ offset, offset = length/2 .. 1."""
+    offset = stmt.length // 2
+    while offset >= 1:
+        for state, other in zip(stmt.state, stmt.state_b):
+            bits, shuffled, partner = em.reg("r"), em.reg("r"), em.reg("f")
+            em.emit(f"mov.b32 {bits}, {em.vars[state]};")
+            em.emit(f"shfl.sync.bfly.b32 {shuffled}, {bits}, {offset}, 0x1f, 0xffffffff;")
+            em.emit(f"mov.b32 {partner}, {shuffled};")
+            em.vars[other] = partner
+        for combine in stmt.combine_states:
+            emit_assign(em, combine)
+        offset //= 2
+
+
+def emit_sync(em: PtxEmitter, stmt: Sync) -> None:
+    if stmt.warp:
+        em.emit("bar.warp.sync 0xffffffff;")
+    elif stmt.barrier_id == 0:
+        em.emit("bar.sync 0;")
+    else:
+        em.emit(f"bar.sync {stmt.barrier_id}, {stmt.count};")
+
+
+def emit_smem(em: PtxEmitter, stmt: Smem) -> None:
+    if stmt.dtype != "float":
+        raise NotImplementedError(f"shared dtype {stmt.dtype}")
+    em.shared.append(f".shared .align {max(stmt.align, 4)} .b8 {stmt.name}[{4 * math.prod(stmt.extents)}];")
+    em.smem_base[stmt.name] = em.reg("r")
+    em.smem_shapes[stmt.name] = stmt.extents
+    em.emit(f"mov.u32 {em.smem_base[stmt.name]}, {stmt.name};")
+
+
+def emit_tree_halve(em: PtxEmitter, stmt: TreeHalve, arg_types: dict) -> None:
+    """Halving tree over the partials in shared memory; every thread ends with the total."""
+    if stmt.inner is not None:
+        raise NotImplementedError("TreeHalve.inner")
+    tid = em.vars[stmt.tid_var]
+    stride = stmt.length // 2
+    while stride >= 1:
+        skip = em.new_label("TREE_SKIP")
+        active = em.reg("p")
+        em.emit(f"setp.lt.s32 {active}, {tid}, {stride};")
+        em.emit(f"@!{active} bra {skip};")
+        partner = em.reg("r")
+        em.emit(f"add.s32 {partner}, {tid}, {stride};")
+        for buf, state, other in zip(stmt.bufs, stmt.state, stmt.state_b):
+            for name, index in ((state, tid), (other, partner)):
+                addr = emit_address(em, buf, index, 4)
+                em.vars[name] = em.reg("f")
+                em.emit(f"ld.shared.f32 {em.vars[name]}, [{addr}];")
+        for combine in stmt.combine_states:
+            emit_assign(em, combine)
+        for buf, state in zip(stmt.bufs, stmt.state):
+            em.emit(f"st.shared.f32 [{emit_address(em, buf, tid, 4)}], {em.vars[state]};")
+        em.label(skip)
+        emit_sync(em, Sync(stmt.barrier_id, stmt.barrier_count))
+        stride //= 2
+    for buf, state in zip(stmt.bufs, stmt.state):       # broadcast the total
+        em.vars[state] = em.reg("f")
+        em.emit(f"ld.shared.f32 {em.vars[state]}, [{emit_address(em, buf, '0', 4)}];")
+
+
+def emit_stmts(em: PtxEmitter, body, arg_types: dict) -> None:
+    for stmt in body:
         if isinstance(stmt, Load):
             emit_load(em, stmt, arg_types)
         elif isinstance(stmt, Assign):
@@ -267,8 +430,26 @@ def emit_body(em: PtxEmitter, tile: Tile, arg_types: dict) -> None:
             emit_let(em, stmt)
         elif isinstance(stmt, Write):
             emit_write(em, stmt, arg_types)
+        elif isinstance(stmt, StridedLoop):
+            emit_strided_loop(em, stmt, arg_types)
+        elif isinstance(stmt, Accum):
+            emit_accum(em, stmt)
+        elif isinstance(stmt, WarpShuffle):
+            emit_warp_shuffle(em, stmt)
+        elif isinstance(stmt, Smem):
+            emit_smem(em, stmt)
+        elif isinstance(stmt, Sync):
+            emit_sync(em, stmt)
+        elif isinstance(stmt, TreeHalve):
+            emit_tree_halve(em, stmt, arg_types)
+        elif isinstance(stmt, Cond):
+            emit_cond(em, stmt, arg_types)
         else:
             raise NotImplementedError(f"statement {type(stmt).__name__}")
+
+
+def emit_body(em: PtxEmitter, tile: Tile, arg_types: dict) -> None:
+    emit_stmts(em, tile.body, arg_types)
 
 
 # Emit
