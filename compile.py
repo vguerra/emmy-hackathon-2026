@@ -10,7 +10,7 @@ from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, TernaryExpr, Var
 from emmy.compiler.ir.kernel.ir import (CpAsyncCommit, CpAsyncCopy, CpAsyncWait, KernelOp, Smem,
                                         Sync, Tile, TreeHalve, WarpShuffle)
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
-from emmy.compiler.ir.stmt.leaves import Accum, Assign, Init, Let, Load, Write
+from emmy.compiler.ir.stmt.leaves import Accum, Assign, Init, Let, Load, Select, Write
 
 
 def load_ir(ir_path: str) -> tuple[Graph, dict]:
@@ -160,7 +160,9 @@ INT_BINOPS = {"+": "add.s32", "-": "sub.s32", "*": "mul.lo.s32",
 # (the expected outputs come from numpy, which rounds every operation).
 F32_BINOPS = {"add": "add.rn.f32", "subtract": "sub.rn.f32", "multiply": "mul.rn.f32",
               "divide": "div.rn.f32", "maximum": "max.f32", "minimum": "min.f32"}
-F32_UNOPS = {"sqrt": "sqrt.rn.f32", "reciprocal": "rcp.rn.f32"}
+F32_UNOPS = {"sqrt": "sqrt.rn.f32", "reciprocal": "rcp.rn.f32", "rsqrt": "rsqrt.approx.f32",
+             "abs": "abs.f32", "negative": "neg.f32", "exp2": "ex2.approx.f32",
+             "log2": "lg2.approx.f32"}
 
 
 def f32_imm(value: float) -> str:
@@ -263,22 +265,103 @@ def emit_load(em: PtxEmitter, stmt: Load, arg_types: dict) -> None:
             if len(regs) > 1 else f"ld{space}.f32 {regs[0]}, [{addr}];")
 
 
+def emit_f32(em: PtxEmitter, line: str) -> str:
+    """Emit `<opcode> dst, operands;` into a fresh f32 register and return it."""
+    dst = em.reg("f")
+    opcode, operands = line.split(" ", 1)
+    em.emit(f"{opcode} {dst}, {operands};")
+    return dst
+
+
+def emit_exp(em: PtxEmitter, x: str, scale: float = 1.0) -> str:
+    """e^(scale * x) = 2^(scale * x * log2 e)."""
+    scaled = emit_f32(em, f"mul.f32 {x}, {f32_imm(scale * math.log2(math.e))}")
+    return emit_f32(em, f"ex2.approx.f32 {scaled}")
+
+
+def emit_log(em: PtxEmitter, x: str) -> str:
+    """ln x = log2 x * ln 2."""
+    base2 = emit_f32(em, f"lg2.approx.f32 {x}")
+    return emit_f32(em, f"mul.f32 {base2}, {f32_imm(math.log(2.0))}")
+
+
+def emit_sigmoid(em: PtxEmitter, x: str) -> str:
+    denom = emit_f32(em, f"add.rn.f32 {emit_exp(em, x, -1.0)}, {f32_imm(1.0)}")
+    return emit_f32(em, f"rcp.rn.f32 {denom}")
+
+
+def emit_tanh(em: PtxEmitter, x: str) -> str:
+    """tanh x = 1 - 2 / (e^(2x) + 1)."""
+    denom = emit_f32(em, f"add.rn.f32 {emit_exp(em, x, 2.0)}, {f32_imm(1.0)}")
+    half = emit_f32(em, f"rcp.rn.f32 {denom}")
+    twice = emit_f32(em, f"mul.rn.f32 {half}, {f32_imm(2.0)}")
+    return emit_f32(em, f"sub.rn.f32 {f32_imm(1.0)}, {twice}")
+
+
+def emit_erf(em: PtxEmitter, x: str) -> str:
+    """Abramowitz-Stegun 7.1.26: erf |x| = 1 - poly(t) * e^(-x^2), t = 1 / (1 + p|x|); abs error 1.5e-7."""
+    p, a1, a2, a3, a4, a5 = 0.3275911, 0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429
+    magnitude = emit_f32(em, f"abs.f32 {x}")
+    t = emit_f32(em, f"rcp.rn.f32 {emit_f32(em, f'fma.rn.f32 {magnitude}, {f32_imm(p)}, {f32_imm(1.0)}')}")
+    poly = emit_f32(em, f"fma.rn.f32 {f32_imm(a5)}, {t}, {f32_imm(a4)}")
+    for coeff in (a3, a2, a1):
+        poly = emit_f32(em, f"fma.rn.f32 {poly}, {t}, {f32_imm(coeff)}")
+    poly = emit_f32(em, f"mul.rn.f32 {poly}, {t}")
+    decay = emit_exp(em, emit_f32(em, f"mul.rn.f32 {x}, {x}"), -1.0)
+    tail = emit_f32(em, f"mul.rn.f32 {poly}, {decay}")
+    return emit_f32(em, f"copysign.f32 {x}, {emit_f32(em, f'sub.rn.f32 {f32_imm(1.0)}, {tail}')}")
+
+
+def emit_gelu(em: PtxEmitter, x: str) -> str:
+    """0.5 x (1 + erf(x / sqrt 2))."""
+    scaled = emit_f32(em, f"mul.rn.f32 {x}, {f32_imm(math.sqrt(0.5))}")
+    one_plus = emit_f32(em, f"add.rn.f32 {emit_erf(em, scaled)}, {f32_imm(1.0)}")
+    return emit_f32(em, f"mul.rn.f32 {emit_f32(em, f'mul.rn.f32 {x}, {f32_imm(0.5)}')}, {one_plus}")
+
+
+def emit_softplus(em: PtxEmitter, x: str) -> str:
+    """ln(1 + e^x)."""
+    return emit_log(em, emit_f32(em, f"add.rn.f32 {emit_exp(em, x)}, {f32_imm(1.0)}"))
+
+
+# Unary ops built from several instructions: name -> emitter returning the result register.
+F32_COMPOSED = {
+    "exp": emit_exp,
+    "log": emit_log,
+    "sigmoid": emit_sigmoid,
+    "tanh": emit_tanh,
+    "erf": emit_erf,
+    "gelu": emit_gelu,
+    "softplus": emit_softplus,
+    "silu": lambda em, x: emit_f32(em, f"mul.rn.f32 {x}, {emit_sigmoid(em, x)}"),
+}
+
+
+F32_COMPARES = {"greater": "gt", "less": "lt", "greater_equal": "ge", "less_equal": "le",
+                "equal": "eq", "not_equal": "ne"}
+
+
 def emit_assign(em: PtxEmitter, stmt: Assign) -> None:
     op = stmt.op.name
     args = [em.vars[a] for a in stmt.args]
-    dst = em.reg("f")
-    if op in F32_BINOPS:
-        em.emit(f"{F32_BINOPS[op]} {dst}, {args[0]}, {args[1]};")
+    if op in F32_COMPARES:                              # a comparison yields a predicate register
+        em.vars[stmt.name] = em.reg("p")
+        em.emit(f"setp.{F32_COMPARES[op]}.f32 {em.vars[stmt.name]}, {args[0]}, {args[1]};")
+        return
+    if op == "where":
+        dst = emit_f32(em, f"selp.f32 {args[1]}, {args[2]}, {args[0]}")
+    elif op in F32_BINOPS:
+        dst = emit_f32(em, f"{F32_BINOPS[op]} {args[0]}, {args[1]}")
     elif op in F32_UNOPS:
-        em.emit(f"{F32_UNOPS[op]} {dst}, {args[0]};")
+        dst = emit_f32(em, f"{F32_UNOPS[op]} {args[0]}")
+    elif op in F32_COMPOSED:
+        dst = F32_COMPOSED[op](em, args[0])
     elif op == "copy":
-        em.emit(f"mov.f32 {dst}, {args[0]};")
+        dst = emit_f32(em, f"mov.f32 {args[0]}")
     elif op == "relu":
-        em.emit(f"max.f32 {dst}, {args[0]}, {f32_imm(0.0)};")
-    elif op == "exp":                                   # e^x = 2^(x * log2 e)
-        scaled = em.reg("f")
-        em.emit(f"mul.f32 {scaled}, {args[0]}, {f32_imm(math.log2(math.e))};")
-        em.emit(f"ex2.approx.f32 {dst}, {scaled};")
+        dst = emit_f32(em, f"max.f32 {args[0]}, {f32_imm(0.0)}")
+    elif op == "square":
+        dst = emit_f32(em, f"mul.rn.f32 {args[0]}, {args[0]}")
     else:
         raise NotImplementedError(f"elementwise op {op!r}")
     em.vars[stmt.name] = dst
@@ -488,6 +571,15 @@ def emit_tree_halve(em: PtxEmitter, stmt: TreeHalve, arg_types: dict) -> None:
         em.emit(f"ld.shared.f32 {em.vars[state]}, [{emit_address(em, buf, '0', 4)}];")
 
 
+def emit_select(em: PtxEmitter, stmt: Select) -> None:
+    """The first branch whose predicate holds; the last branch is the catch-all."""
+    dst = em.reg("f")
+    em.emit(f"mov.f32 {dst}, {em.vars[stmt.branches[-1].value]};")
+    for branch in reversed(stmt.branches[:-1]):
+        em.emit(f"selp.f32 {dst}, {em.vars[branch.value]}, {dst}, {emit_pred(em, branch.select)};")
+    em.vars[stmt.name] = dst
+
+
 def emit_stmts(em: PtxEmitter, body, arg_types: dict) -> None:
     for stmt in body:
         if isinstance(stmt, Load):
@@ -500,6 +592,8 @@ def emit_stmts(em: PtxEmitter, body, arg_types: dict) -> None:
             emit_write(em, stmt, arg_types)
         elif isinstance(stmt, StridedLoop):
             emit_strided_loop(em, stmt, arg_types)
+        elif isinstance(stmt, Select):
+            emit_select(em, stmt)
         elif isinstance(stmt, Loop):
             emit_loop(em, stmt, arg_types)
         elif isinstance(stmt, Init):
