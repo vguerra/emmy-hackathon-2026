@@ -6,10 +6,11 @@ import sys
 from pathlib import Path
 
 from emmy.compiler.graph import Graph
-from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, Var
-from emmy.compiler.ir.kernel.ir import KernelOp, Smem, Sync, Tile, TreeHalve, WarpShuffle
-from emmy.compiler.ir.stmt.blocks import Cond, StridedLoop
-from emmy.compiler.ir.stmt.leaves import Accum, Assign, Let, Load, Write
+from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, TernaryExpr, Var
+from emmy.compiler.ir.kernel.ir import (CpAsyncCommit, CpAsyncCopy, CpAsyncWait, KernelOp, Smem,
+                                        Sync, Tile, TreeHalve, WarpShuffle)
+from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
+from emmy.compiler.ir.stmt.leaves import Accum, Assign, Init, Let, Load, Write
 
 
 def load_ir(ir_path: str) -> tuple[Graph, dict]:
@@ -67,6 +68,8 @@ class PtxEmitter:
         self.smem_base = {}                             # shared array name -> u32 base address reg
         self.smem_shapes = {}                           # shared array name -> extents
         self.label_count = 0
+        self.dynamic_smem = False                       # shared arrays live in one extern array
+        self.smem_used = 0                              # bytes handed out of it so far
 
     def reg(self, kind: str) -> str:
         self.reg_counts[kind] += 1
@@ -96,6 +99,10 @@ def emit_prologue(em: PtxEmitter, tile: Tile, arg_order: list[str]) -> None:
     """Params -> global pointers, flat thread id, `gid < N` guard, axis decode."""
     if tile.aux_threads:
         raise NotImplementedError("Tile.aux_threads (warp-specialized producer band)")
+
+    # Static shared memory is capped at 48 KiB; beyond that it must be one dynamic array.
+    total = sum(4 * math.prod(s.extents) for s in tile.body.iter_of_type(Smem))
+    em.dynamic_smem = total > STATIC_SMEM_LIMIT
 
     for name in arg_order:
         raw, glob = em.reg("rd"), em.reg("rd")
@@ -144,6 +151,8 @@ def emit_prologue(em: PtxEmitter, tile: Tile, arg_order: list[str]) -> None:
 
 # Walk
 
+STATIC_SMEM_LIMIT = 48 * 1024
+
 INT_BINOPS = {"+": "add.s32", "-": "sub.s32", "*": "mul.lo.s32",
               "/": "div.s32", "//": "div.s32", "%": "rem.s32"}
 
@@ -173,6 +182,12 @@ def emit_int_expr(em: PtxEmitter, expr: Expr) -> str:
         right = emit_int_expr(em, expr.right)
         dst = em.reg("r")
         em.emit(f"{INT_BINOPS[expr.op]} {dst}, {left}, {right};")
+        return dst
+    if isinstance(expr, TernaryExpr):
+        pred = emit_pred(em, expr.cond)
+        if_true, if_false = emit_int_expr(em, expr.if_true), emit_int_expr(em, expr.if_false)
+        dst = em.reg("r")
+        em.emit(f"selp.s32 {dst}, {if_true}, {if_false}, {pred};")
         return dst
     raise NotImplementedError(f"index expression {expr!r}")
 
@@ -236,7 +251,7 @@ def vector_suffix(n: int) -> str:
 
 
 def emit_load(em: PtxEmitter, stmt: Load, arg_types: dict) -> None:
-    if stmt.dtype.name != "f32":
+    if stmt.dtype is not None and stmt.dtype.name != "f32":   # None: untyped (shared-memory) load
         raise NotImplementedError(f"load dtype {stmt.dtype.name}")
     shape = buffer_shape(em, arg_types, stmt.input)
     addr = emit_address(em, stmt.input, emit_flat_offset(em, stmt.index, shape), 4)
@@ -326,19 +341,21 @@ def emit_cond(em: PtxEmitter, stmt: Cond, arg_types: dict) -> None:
     em.label(end)
 
 
-def emit_strided_loop(em: PtxEmitter, stmt: StridedLoop, arg_types: dict) -> None:
-    # The accumulators folded inside start at their identity each time the loop is entered.
-    for acc in stmt.body.iter_of_type(Accum):
-        if acc.base is not None:
-            raise NotImplementedError("Accum.base")
-        em.vars[acc.name] = em.reg("f")
-        em.emit(f"mov.f32 {em.vars[acc.name]}, {f32_imm(acc.op.identity)};")
+def emit_counted_loop(em: PtxEmitter, stmt: Loop | StridedLoop, start: Expr, end: Expr,
+                      step: Expr, arg_types: dict) -> None:
+    """for (axis = start; axis < end; axis += step) body, seeding the folded accumulators first."""
+    if stmt.seed:
+        for acc in stmt.body.iter_of_type(Accum):
+            if acc.base is not None:
+                raise NotImplementedError("Accum.base")
+            if acc.name not in em.vars:                 # an Init may have declared it already
+                em.vars[acc.name] = em.reg("f")
+            em.emit(f"mov.f32 {em.vars[acc.name]}, {f32_imm(acc.op.identity)};")
 
     index = em.reg("r")
-    em.emit(f"mov.s32 {index}, {emit_int_expr(em, stmt.start)};")
-    end = stmt.end if stmt.end is not None else Literal(stmt.axis.extent.as_static(), "int")
+    em.emit(f"mov.s32 {index}, {emit_int_expr(em, start)};")
     bound = emit_int_expr(em, end)
-    step = emit_int_expr(em, stmt.step)
+    step = emit_int_expr(em, step)
     top, done = em.new_label("LOOP"), em.new_label("LOOP_END")
     em.vars[stmt.axis.name] = index
 
@@ -350,6 +367,47 @@ def emit_strided_loop(em: PtxEmitter, stmt: StridedLoop, arg_types: dict) -> Non
     em.emit(f"add.s32 {index}, {index}, {step};")
     em.emit(f"bra {top};")
     em.label(done)
+
+
+def axis_end(stmt: Loop | StridedLoop) -> Expr:
+    return Literal(stmt.axis.extent.as_static(), "int")
+
+
+def emit_strided_loop(em: PtxEmitter, stmt: StridedLoop, arg_types: dict) -> None:
+    end = stmt.end if stmt.end is not None else axis_end(stmt)
+    emit_counted_loop(em, stmt, stmt.start, end, stmt.step, arg_types)
+
+
+def emit_loop(em: PtxEmitter, stmt: Loop, arg_types: dict) -> None:
+    emit_counted_loop(em, stmt, Literal(0, "int"), axis_end(stmt), Literal(1, "int"), arg_types)
+
+
+def emit_init(em: PtxEmitter, stmt: Init) -> None:
+    if stmt.dtype.name != "f32":
+        raise NotImplementedError(f"init dtype {stmt.dtype.name}")
+    em.vars[stmt.name] = em.reg("f")
+    em.emit(f"mov.f32 {em.vars[stmt.name]}, {f32_imm(stmt.identity)};")
+
+
+def emit_cp_async(em: PtxEmitter, stmt: CpAsyncCopy, arg_types: dict) -> None:
+    """Global -> shared copy of 4/8/16 bytes; 16-byte copies must use .cg."""
+    if stmt.swizzle != "NONE":
+        raise NotImplementedError("CpAsyncCopy swizzle")
+    if stmt.nbytes not in (4, 8, 16):
+        raise NotImplementedError(f"cp.async of {stmt.nbytes} bytes")
+    smem_shape = buffer_shape(em, arg_types, stmt.smem)
+    offset = emit_flat_offset(em, stmt.smem_index, smem_shape)
+    if stmt.lane_index is not None:                     # this thread's own (row, col) within the stripe
+        row, col = (emit_int_expr(em, e) for e in stmt.lane_index)
+        lane = em.reg("r")
+        em.emit(f"mad.lo.s32 {lane}, {row}, {smem_shape[-1]}, {col};")
+        total = em.reg("r")
+        em.emit(f"add.s32 {total}, {offset}, {lane};")
+        offset = total
+    dst = emit_address(em, stmt.smem, offset, 4)
+    src = emit_address(em, stmt.src, emit_flat_offset(em, stmt.src_index, buffer_shape(em, arg_types, stmt.src)), 4)
+    cache = "cg" if stmt.nbytes == 16 else "ca"
+    em.emit(f"cp.async.{cache}.shared.global [{dst}], [{src}], {stmt.nbytes};")
 
 
 def emit_accum(em: PtxEmitter, stmt: Accum) -> None:
@@ -384,10 +442,19 @@ def emit_sync(em: PtxEmitter, stmt: Sync) -> None:
 def emit_smem(em: PtxEmitter, stmt: Smem) -> None:
     if stmt.dtype != "float":
         raise NotImplementedError(f"shared dtype {stmt.dtype}")
-    em.shared.append(f".shared .align {max(stmt.align, 4)} .b8 {stmt.name}[{4 * math.prod(stmt.extents)}];")
+    align = max(stmt.align, 4)
+    nbytes = 4 * math.prod(stmt.extents)
     em.smem_base[stmt.name] = em.reg("r")
     em.smem_shapes[stmt.name] = stmt.extents
-    em.emit(f"mov.u32 {em.smem_base[stmt.name]}, {stmt.name};")
+    if em.dynamic_smem:                                 # carve the array out of the extern one
+        em.smem_used = -(-em.smem_used // align) * align
+        em.emit(f"mov.u32 {em.smem_base[stmt.name]}, smem_dyn;")
+        if em.smem_used:
+            em.emit(f"add.s32 {em.smem_base[stmt.name]}, {em.smem_base[stmt.name]}, {em.smem_used};")
+        em.smem_used += nbytes
+    else:
+        em.shared.append(f".shared .align {align} .b8 {stmt.name}[{nbytes}];")
+        em.emit(f"mov.u32 {em.smem_base[stmt.name]}, {stmt.name};")
 
 
 def emit_tree_halve(em: PtxEmitter, stmt: TreeHalve, arg_types: dict) -> None:
@@ -432,6 +499,16 @@ def emit_stmts(em: PtxEmitter, body, arg_types: dict) -> None:
             emit_write(em, stmt, arg_types)
         elif isinstance(stmt, StridedLoop):
             emit_strided_loop(em, stmt, arg_types)
+        elif isinstance(stmt, Loop):
+            emit_loop(em, stmt, arg_types)
+        elif isinstance(stmt, Init):
+            emit_init(em, stmt)
+        elif isinstance(stmt, CpAsyncCopy):
+            emit_cp_async(em, stmt, arg_types)
+        elif isinstance(stmt, CpAsyncCommit):
+            em.emit("cp.async.commit_group;")
+        elif isinstance(stmt, CpAsyncWait):
+            em.emit(f"cp.async.wait_group {stmt.group};")
         elif isinstance(stmt, Accum):
             emit_accum(em, stmt)
         elif isinstance(stmt, WarpShuffle):
@@ -464,6 +541,7 @@ def render(entry: str, arg_order: list[str], em: PtxEmitter) -> str:
         ".address_size 64",
         "",
         *em.shared,
+        *([".extern .shared .align 16 .b8 smem_dyn[];"] if em.dynamic_smem else []),
         f".visible .entry {entry}(",
         params,
         ")",
