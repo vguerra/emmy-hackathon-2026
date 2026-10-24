@@ -271,6 +271,8 @@ def emit_assign(em: PtxEmitter, stmt: Assign) -> None:
         em.emit(f"{F32_BINOPS[op]} {dst}, {args[0]}, {args[1]};")
     elif op in F32_UNOPS:
         em.emit(f"{F32_UNOPS[op]} {dst}, {args[0]};")
+    elif op == "copy":
+        em.emit(f"mov.f32 {dst}, {args[0]};")
     elif op == "relu":
         em.emit(f"max.f32 {dst}, {args[0]}, {f32_imm(0.0)};")
     elif op == "exp":                                   # e^x = 2^(x * log2 e)
@@ -346,8 +348,6 @@ def emit_counted_loop(em: PtxEmitter, stmt: Loop | StridedLoop, start: Expr, end
     """for (axis = start; axis < end; axis += step) body, seeding the folded accumulators first."""
     if stmt.seed:
         for acc in stmt.body.iter_of_type(Accum):
-            if acc.base is not None:
-                raise NotImplementedError("Accum.base")
             if acc.name not in em.vars:                 # an Init may have declared it already
                 em.vars[acc.name] = em.reg("f")
             em.emit(f"mov.f32 {em.vars[acc.name]}, {f32_imm(acc.op.identity)};")
@@ -412,7 +412,8 @@ def emit_cp_async(em: PtxEmitter, stmt: CpAsyncCopy, arg_types: dict) -> None:
 
 def emit_accum(em: PtxEmitter, stmt: Accum) -> None:
     acc = em.vars[stmt.name]                            # in place: the register outlives the loop body
-    em.emit(f"{F32_BINOPS[stmt.op.name]} {acc}, {acc}, {em.vars[stmt.value]};")
+    left = em.vars[stmt.base] if stmt.base else acc     # base: a rescaled value read instead of acc
+    em.emit(f"{F32_BINOPS[stmt.op.name]} {acc}, {left}, {em.vars[stmt.value]};")
 
 
 def emit_warp_shuffle(em: PtxEmitter, stmt: WarpShuffle) -> None:
