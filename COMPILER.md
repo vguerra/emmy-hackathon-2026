@@ -120,8 +120,8 @@ Tried and dropped because they were slower or measured as no change:
 - `ld.global.nc` for read-only inputs (the plain load already uses the L1 cache on these GPUs).
 
 **Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
-baseline commit `2fca374` and on the optimised compiler: 15 faster, 96 unchanged, 1 flagged slower (`y_r_t256`,
-4.8 to 5.5 µs, a launch-bound kernel, so timer noise), geometric mean 1.12x. The unchanged ones are launch-bound at
+baseline commit `2fca374` and on the optimised compiler: 17 faster, 94 unchanged, 1 flagged slower (`f02_row_softmax`,
+3.0 to 3.6 µs, a launch-bound kernel, so timer noise), geometric mean 1.13x. The unchanged ones are launch-bound at
 3-5 µs. Regenerate it with `python tools/compare_commits.py 2fca374 HEAD`.
 
 ## Testing
