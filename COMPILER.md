@@ -117,6 +117,10 @@ Tried and dropped because they were slower or measured as no change:
   heuristics, so a bigger loop body is not automatically better.
 - **A different unroll factor per kernel.** Factors 8, 16 and 32 beat 4 on a couple of kernels
   (`y_a_256x64` -20% at 16) and lost on others (`a01_attention` +15% at 8), so one global factor stays.
+- **Vector loads from shared memory** in the f32 matmul (`_a_smem[row, _ki]` is contiguous in the unrolled axis, so
+  the same grouping applies). Correct, 142/142 pass and the inner loop issues `ld.shared.v4`, but `m01_matmul_512`
+  (21.2 µs) and `y_m_1024` (19.1 µs) did not move: the matmul is bound by the global-to-shared pipeline and launch
+  cost, not by shared-load issue slots. Removed rather than carry code with no measured gain.
 - `ld.global.nc` for read-only inputs (the plain load already uses the L1 cache on these GPUs).
 
 **Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
