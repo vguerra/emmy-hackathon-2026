@@ -1,0 +1,74 @@
+{
+ "id": "x_p_odd",
+ "code": "torch.randn(3000) * torch.randn(3000) + 2.0",
+ "rtol": 1e-06,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "add"
+ ],
+ "kernels": [
+  {
+   "node": "add",
+   "entry": "k_add_pointwise",
+   "arg_order": [
+    "add_c1",
+    "x1",
+    "x0",
+    "add"
+   ],
+   "grid": [
+    3,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      2.0
+     ]
+    },
+    {
+     "name": "x1",
+     "dtype": "f32",
+     "shape": [
+      3000
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f32",
+     "shape": [
+      3000
+     ],
+     "seed": 0
+    },
+    {
+     "name": "add",
+     "dtype": "f32",
+     "shape": [
+      3000
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

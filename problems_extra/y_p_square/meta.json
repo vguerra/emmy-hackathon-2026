@@ -1,0 +1,53 @@
+{
+ "id": "y_p_square",
+ "code": "x = torch.randn(1024); x * x * x",
+ "rtol": 1e-06,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "mul_1"
+ ],
+ "kernels": [
+  {
+   "node": "mul_1",
+   "entry": "k_mul_1_pointwise",
+   "arg_order": [
+    "x",
+    "mul_1"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      1024
+     ],
+     "seed": 0
+    },
+    {
+     "name": "mul_1",
+     "dtype": "f32",
+     "shape": [
+      1024
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

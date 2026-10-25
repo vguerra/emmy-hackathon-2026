@@ -1,0 +1,66 @@
+{
+ "id": "k_h_mm_async4",
+ "code": "torch.randn(128, 128, dtype=torch.float16) @ torch.randn(128, 128, dtype=torch.float16)",
+ "rtol": 0.02,
+ "atol": 0.05,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul_819b4f",
+   "arg_order": [
+    "x1",
+    "x0",
+    "matmul"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    64,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f16",
+     "shape": [
+      128,
+      128
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f16",
+     "shape": [
+      128,
+      128
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "f16",
+     "shape": [
+      128,
+      128
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

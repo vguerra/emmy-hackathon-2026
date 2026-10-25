@@ -1,0 +1,19 @@
+    Tile[a0_b, a1_b, a0_u, a1_u] (N=16384)
+        Init(f32 acc0__c0_0 = 0.0)
+        Smem __half _a_smem[8, 128] align=16
+        Smem __half _b_smem[128, 16] align=16
+        for _ks in 0..128:128
+            for _fa in ((a0_u * 16) + a1_u)..128:128
+                _a_copy0, _a_copy1, _a_copy2, _a_copy3, _a_copy4, _a_copy5, _a_copy6, _a_copy7 = load x0[((a0_b * 8) + ((_fa * 8) / 128)), (_ks + ((_fa * 8) % 128))]
+                _a_smem[((_fa * 8) / 128), ((_fa * 8) % 128)] = (_a_copy0, _a_copy1, _a_copy2, _a_copy3, _a_copy4, _a_copy5, _a_copy6, _a_copy7)
+            for _fb in ((a0_u * 16) + a1_u)..256:128
+                _b_copy0, _b_copy1, _b_copy2, _b_copy3, _b_copy4, _b_copy5, _b_copy6, _b_copy7 = load x1[(_ks + ((_fb * 8) / 16)), ((a1_b * 16) + ((_fb * 8) % 16))]
+                _b_smem[((_fb * 8) / 16), ((_fb * 8) % 16)] = (_b_copy0, _b_copy1, _b_copy2, _b_copy3, _b_copy4, _b_copy5, _b_copy6, _b_copy7)
+            Sync
+            for _ki in 0..128
+                in1__c0_0 = load _b_smem[_ki, ((((a1_b * 16) + (a1_u * 1)) + 0) - (a1_b * 16))]
+                in0__c0_0 = load _a_smem[((((a0_b * 8) + (a0_u * 1)) + 0) - (a0_b * 8)), _ki]
+                f32 acc0__v__c0_0 = multiply(in1__c0_0, in0__c0_0)
+                f32 acc0__c0_0 <- add(acc0__c0_0, acc0__v__c0_0)
+            Sync
+        matmul[(((a0_b * 8) + (a0_u * 1)) + 0), (((a1_b * 16) + (a1_u * 1)) + 0)] = acc0__c0_0

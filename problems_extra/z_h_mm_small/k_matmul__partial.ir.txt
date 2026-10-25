@@ -1,0 +1,36 @@
+    Tile[_a2_ks, a0_b, a1_b, a0_u, a1_u, _lane] (N=1024)
+        RegFragment a:f16 _a[4][4] (16x8x16)
+        RegFragment b:f16 _b[4][2] (16x8x16)
+        RegFragment c:f32 _c0_[4][4] (16x8x16)
+        RegFragment c:f32 _c1_[4][4] (16x8x16)
+        RegFragment c:f32 _c2_[4][4] (16x8x16)
+        RegFragment c:f32 _c3_[4][4] (16x8x16)
+        for a2 in 0..2:16
+            for _r0 in 0..4:1
+                LdmatrixLoad _a[_r0] <- x0[(((a0_b * 128) + (a0_u * 64)) + (_r0 * 16)), ((_a2_ks * 2) + a2)] (gmem-direct guard<32, ldm=32)
+            for _r0 in 0..4:1
+                LdmatrixLoad _b[_r0] <- x1[((_a2_ks * 2) + a2), (((a1_b * 32) + (a1_u * 32)) + (_r0 * 8))] (gmem-direct, ldm=32)
+            for _r0 in 0..4:1
+                MmaSyncPtx _c0_[_r0] += _a[0] @ _b[_r0] (m16n8k16 f16)
+            for _r0 in 0..4:1
+                MmaSyncPtx _c1_[_r0] += _a[1] @ _b[_r0] (m16n8k16 f16)
+            for _r0 in 0..4:1
+                MmaSyncPtx _c2_[_r0] += _a[2] @ _b[_r0] (m16n8k16 f16)
+            for _r0 in 0..4:1
+                MmaSyncPtx _c3_[_r0] += _a[3] @ _b[_r0] (m16n8k16 f16)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 0), (((a1_b * 32) + (a1_u * 32)) + 0)] <- _c0_[0] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 0), (((a1_b * 32) + (a1_u * 32)) + 8)] <- _c0_[1] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 0), (((a1_b * 32) + (a1_u * 32)) + 16)] <- _c0_[2] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 0), (((a1_b * 32) + (a1_u * 32)) + 24)] <- _c0_[3] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 16), (((a1_b * 32) + (a1_u * 32)) + 0)] <- _c1_[0] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 16), (((a1_b * 32) + (a1_u * 32)) + 8)] <- _c1_[1] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 16), (((a1_b * 32) + (a1_u * 32)) + 16)] <- _c1_[2] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 16), (((a1_b * 32) + (a1_u * 32)) + 24)] <- _c1_[3] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 32), (((a1_b * 32) + (a1_u * 32)) + 0)] <- _c2_[0] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 32), (((a1_b * 32) + (a1_u * 32)) + 8)] <- _c2_[1] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 32), (((a1_b * 32) + (a1_u * 32)) + 16)] <- _c2_[2] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 32), (((a1_b * 32) + (a1_u * 32)) + 24)] <- _c2_[3] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 48), (((a1_b * 32) + (a1_u * 32)) + 0)] <- _c3_[0] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 48), (((a1_b * 32) + (a1_u * 32)) + 8)] <- _c3_[1] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 48), (((a1_b * 32) + (a1_u * 32)) + 16)] <- _c3_[2] m<32 (ldm=auto)
+        RegStore matmul__partial[_a2_ks, (((a0_b * 128) + (a0_u * 64)) + 48), (((a1_b * 32) + (a1_u * 32)) + 24)] <- _c3_[3] m<32 (ldm=auto)
