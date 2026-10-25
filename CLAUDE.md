@@ -40,8 +40,9 @@ and no pip in `.venv`; tests use `unittest`. macOS: no `timeout`, BSD `sed -i` n
 - `compile.py` — CLI; `compile_ir()` runs load -> prologue -> walk -> render.
 - `ptxgen/` — the lowering, one module per concern (see `COMPILER.md` for the list). Annotate function signatures
   only, not local variables.
-- `problems/` — the 15 organiser problems. `problems_extra/` — 104 probes made from `tools/expressions_extra.py`
-  (prefixes: `x_`/`y_` shapes and ops, `z_` dtypes and tensor cores, `w_` f16 attention, `k_` schedule knobs).
+- `problems/` — the 15 organiser problems. `problems_extra/` — 127 probes made from `tools/expressions_extra.py`
+  (prefixes: `x_`/`y_` shapes and ops, `z_` dtypes and tensor cores, `w_` f16 attention, `k_` schedule knobs,
+  `o_` odd extents and thread counts that do not divide the problem size).
   `problems_asm/` — assemble-only kernels. `examples/compiled/` — generated PTX beside its IR.
 
 ## Contracts and gotchas

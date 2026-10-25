@@ -15,13 +15,14 @@ matrix i.
 
 import re
 
+from emmy.compiler.ir.expr import Literal
 from emmy.compiler.ir.kernel.ir import (FragmentApply, FragmentRepack, FragmentRowReduce, LdmatrixLoad,
                                         MmaSyncPtx, RegFragment, RegStore)
 
 from .dtypes import BOOL, F16, F32, emit_convert, emit_reg, emit_shfl_xor, f32_imm, ty
 from .elementwise import BINOPS, apply_op
 from .emitter import PtxEmitter
-from .expr import emit_flat_offset, emit_int_expr, emit_pred
+from .expr import emit_flat_offset, emit_int_expr, emit_pred, int_op
 from .memory import (buffer_shape, buffer_type, emit_address, emit_ld, emit_st, emit_swizzle, mem_space)
 
 FRAGMENT_REF = re.compile(r"^(\w+)(?:\[(\w+)\])?$")
@@ -171,8 +172,11 @@ def emit_reg_store(em: PtxEmitter, stmt: RegStore, arg_types: dict) -> None:
     """Write a C fragment: each lane stores its two row pairs (g and g+8) of two columns."""
     if stmt.fragment_layout != "m16n8k16":
         raise NotImplementedError(f"RegStore of fragment layout {stmt.fragment_layout}")
-    if stmt.epilogue is not None and len(stmt.epilogue.params) != 1 + len(stmt.extra_frags):
-        raise NotImplementedError("epilogue reading coordinates beyond its accumulators")
+    if stmt.epilogue is not None:
+        passed = stmt.epilogue.params[1 + len(stmt.extra_frags):]       # after the accumulators: coordinates, axes
+        unknown = [name for name in passed if name not in ("__M__", "__N__") and name not in em.vars]
+        if len(stmt.epilogue.params) < 1 + len(stmt.extra_frags) or unknown:
+            raise NotImplementedError(f"epilogue parameters {unknown or list(stmt.epilogue.params)}")
     t = buffer_type(em, arg_types, stmt.dst_buffer)
     shape = buffer_shape(em, arg_types, stmt.dst_buffer)
     row_dim = stmt.row_dim if stmt.row_dim is not None else len(shape) - 2
@@ -181,22 +185,47 @@ def emit_reg_store(em: PtxEmitter, stmt: RegStore, arg_types: dict) -> None:
     group = emit_reg(em, "r", f"shr.u32 {lane}, 2")
     pair = emit_reg(em, "r", f"shl.b32 {emit_reg(em, 'r', f'and.b32 {lane}, 3')}, 1")
     base = emit_flat_offset(em, stmt.dst_index, shape)
-    c = fragment_regs(em, stmt.frag)
+    paired = pair_store_ok(stmt, ldm, t)
     for half in (0, 1):                                        # rows g and g + 8
         row = emit_reg(em, "r", f"mad.lo.s32 {group}, {ldm}, {pair}")
         element = emit_reg(em, "r", f"add.s32 {row}, {base}")
         if half:
             element = emit_reg(em, "r", f"add.s32 {element}, {8 * ldm}")
-        skip = _guard(em, stmt, group, pair, half)
-        element = emit_swizzle(em, element, stmt.swizzle)
-        addr = emit_address(em, stmt.dst_buffer, element, t.nbytes)
-        values = [_stored_value(em, stmt, arg_types, t, 2 * half + e, group, pair, half, e) for e in (0, 1)]
-        if stmt.atomic:
-            _emit_atomic_pair(em, addr, t, values)
-        else:
-            emit_st(em, mem_space(em, stmt.dst_buffer), addr, t, values)
-        if skip:
-            em.label(skip)
+        if paired:
+            _store_columns(em, stmt, arg_types, t, element, (0, 1), group, pair, half)
+        else:                                                  # each column on its own: own bounds check and address
+            for e in (0, 1):
+                _store_columns(em, stmt, arg_types, t, element, (e,), group, pair, half)
+
+
+def pair_store_ok(stmt: RegStore, ldm: int, t) -> bool:
+    """True when a lane's two adjacent columns may be written as one 2-element access.
+
+    A 2-wide access needs a 2-element-aligned address, so the row stride must be even, and a masked tile
+    must never end between the pair's columns, so the column bound must be a known even number.
+    """
+    if ldm % 2:
+        return False
+    if stmt.n_guard is None:
+        return True
+    bound = stmt.n_guard[1]
+    return isinstance(bound, Literal) and int(bound.value) % 2 == 0
+
+
+def _store_columns(em: PtxEmitter, stmt: RegStore, arg_types: dict, t, element: str, columns: tuple,
+                   group: str, pair: str, half: int) -> None:
+    """Store the fragment elements of `columns` (0, 1 or both) of one row, as one access."""
+    skip = _guard(em, stmt, group, pair, half, columns[-1])
+    first = columns[0]
+    where = emit_swizzle(em, int_op(em, "+", element, str(first)), stmt.swizzle)
+    addr = emit_address(em, stmt.dst_buffer, where, t.nbytes)
+    values = [_stored_value(em, stmt, arg_types, t, 2 * half + e, group, pair, half, e) for e in columns]
+    if stmt.atomic:
+        _emit_atomic(em, addr, t, values)
+    else:
+        emit_st(em, mem_space(em, stmt.dst_buffer), addr, t, values)
+    if skip:
+        em.label(skip)
 
 
 def _stored_value(em: PtxEmitter, stmt: RegStore, arg_types: dict, t, index: int, group: str,
@@ -226,8 +255,8 @@ def _prod(values) -> int:
     return result
 
 
-def _guard(em: PtxEmitter, stmt: RegStore, group: str, pair: str, half: int) -> str | None:
-    """Branch past this row pair's store when it lies outside a masked tile; returns the label."""
+def _guard(em: PtxEmitter, stmt: RegStore, group: str, pair: str, half: int, last_column: int) -> str | None:
+    """Branch past a store when its row or its last column lies outside a masked tile; returns the label."""
     if stmt.m_guard is None and stmt.n_guard is None:
         return None
     skip = em.new_label("STORE_SKIP")
@@ -239,18 +268,22 @@ def _guard(em: PtxEmitter, stmt: RegStore, group: str, pair: str, half: int) -> 
         out = em.reg("p")
         em.emit(f"setp.ge.s32 {out}, {row}, {bound};")
         em.emit(f"@{out} bra {skip};")
-    if stmt.n_guard is not None:                               # the pair's second column must also fit
+    if stmt.n_guard is not None:                               # every column the access covers must fit
         base, bound = (emit_int_expr(em, e) for e in stmt.n_guard)
         col = emit_reg(em, "r", f"add.s32 {base}, {pair}")
-        last = emit_reg(em, "r", f"add.s32 {col}, 1")
+        last = int_op(em, "+", col, str(last_column))
         out = em.reg("p")
         em.emit(f"setp.ge.s32 {out}, {last}, {bound};")
         em.emit(f"@{out} bra {skip};")
     return skip
 
 
-def _emit_atomic_pair(em: PtxEmitter, addr: str, t, values: list[str]) -> None:
-    """Atomic add of two adjacent elements: packed for f16, one instruction each otherwise."""
+def _emit_atomic(em: PtxEmitter, addr: str, t, values: list[str]) -> None:
+    """Atomic add of one or two adjacent elements: f16 pairs are packed, anything else is one instruction each."""
+    if t is F16 and len(values) == 1:
+        half = emit_reg(em, "h", f"cvt.rn.f16.f32 {values[0]}")
+        em.emit(f"red.global.add.noftz.f16 [{addr}], {half};")
+        return
     if t is F16:
         halves = [emit_reg(em, "h", f"cvt.rn.f16.f32 {v}") for v in values]
         word = em.reg("r")

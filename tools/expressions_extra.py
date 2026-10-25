@@ -278,3 +278,68 @@ OPEN += [
          ref=lambda a, b: [f32(f64(a) @ f64(b))], rtol=1e-3, atol=1e-3, knobs="STAGE=d3/smem-async"),
     dict(id="k_h_mm_unroll", code=MM128, ref=MM128_REF, rtol=2e-2, atol=5e-2, knobs="UNROLL=1"),
 ]
+
+# ---- odd shapes and thread counts that do not divide the problem size (prefix o_) ----------------
+SUM_REF = lambda x: [f32(f64(x).sum())]
+OPEN += [
+    # pointwise: only the derived bounds guard stands between the launch and the buffer's end
+    dict(id="o_p_scalar", code="torch.randn(1) * 3.0 + 1.0",
+         ref=lambda a: [a * np.float32(3.0) + np.float32(1.0)], rtol=1e-6, atol=1e-6),
+    dict(id="o_p_2d_prime", code="torch.randn(13, 17) * torch.randn(13, 17)",
+         ref=lambda a, b: [a * b], rtol=0, atol=0),
+    dict(id="o_p_3d_odd", code="torch.randn(3, 5, 7) + torch.randn(3, 5, 7)",
+         ref=lambda a, b: [a + b], rtol=0, atol=0),
+    dict(id="o_p_f16_odd", code="torch.randn(1001, dtype=torch.float16) * torch.randn(1001, dtype=torch.float16)",
+         ref=lambda a, b: [f16(f64(a) * f64(b))], rtol=1e-3, atol=1e-3),
+
+    # reductions shorter than, and not a multiple of, the cooperating block
+    dict(id="o_r_len7", code="torch.randn(7).sum()", ref=SUM_REF, rtol=1e-4, atol=1e-4, knobs=T32),
+    dict(id="o_r_len33", code="torch.randn(33).sum()", ref=SUM_REF, rtol=1e-4, atol=1e-4, knobs=T32),
+    dict(id="o_r_len1000_t64", code="torch.randn(1000).sum()", ref=SUM_REF, rtol=1e-4, atol=1e-4, knobs=T64),
+    dict(id="o_r_len1000_t256", code="torch.randn(1000).sum()", ref=SUM_REF, rtol=1e-4, atol=1e-4, knobs=T256),
+    dict(id="o_r_rows_odd", code="torch.randn(5, 77).sum(-1)",
+         ref=lambda x: [f32(f64(x).sum(-1))], rtol=1e-4, atol=1e-4, knobs=T256),
+
+    # reductions left to emmy's default schedule
+    dict(id="o_r_default_sum", code="torch.randn(1000).sum()", ref=SUM_REF, rtol=1e-4, atol=1e-4),
+    dict(id="o_r_default_rows", code="torch.randn(17, 129).sum(-1)",
+         ref=lambda x: [f32(f64(x).sum(-1))], rtol=1e-4, atol=1e-4),
+    dict(id="o_r_default_max", code="torch.randn(5, 37).max(-1).values",
+         ref=lambda x: [x.max(-1)], rtol=0, atol=0),
+    dict(id="o_f_default_softmax", code="torch.softmax(torch.randn(7, 33), dim=-1)",
+         ref=lambda x: [f32(_softmax(f64(x)))], rtol=1e-3, atol=1e-5),
+
+    # reductions split across blocks
+    dict(id="o_r_grid3k", code="torch.randn(1001).sum()", ref=SUM_REF, rtol=1e-3, atol=1e-3,
+         knobs="WORK=t128,REDUCE=g3k/coop"),
+    dict(id="o_r_grid4_atomic", code="torch.randn(100000).sum()", ref=SUM_REF, rtol=1e-3, atol=1e-2,
+         knobs="WORK=t128,REDUCE=g4a/coop"),
+
+    # matmul and attention with extents that no tile divides
+    dict(id="o_m_33x17x65", code="torch.randn(33, 17) @ torch.randn(17, 65)",
+         ref=lambda a, b: [f32(f64(a) @ f64(b))], rtol=1e-3, atol=1e-3),
+    dict(id="o_m_row_vector", code="torch.randn(1, 64) @ torch.randn(64, 1)",
+         ref=lambda a, b: [f32(f64(a) @ f64(b))], rtol=1e-3, atol=1e-3),
+    dict(id="o_m_130x70", code="torch.randn(130, 70) @ torch.randn(70, 130)",
+         ref=lambda a, b: [f32(f64(a) @ f64(b))], rtol=1e-3, atol=1e-3),
+    dict(id="o_h_mm_33x17x65",
+         code="torch.randn(33, 17, dtype=torch.float16) @ torch.randn(17, 65, dtype=torch.float16)",
+         ref=lambda a, b: [f16(f64(a) @ f64(b))], rtol=2e-2, atol=5e-2),
+    dict(id="o_a_37x16", code="q = torch.randn(37, 16); kt = torch.randn(16, 37); v = torch.randn(37, 16); "
+         "torch.softmax(q @ kt / 4.0, dim=-1) @ v",
+         ref=lambda q, kt, v: [f32(_softmax((f64(q) @ f64(kt)) / 4.0) @ f64(v))], rtol=1e-3, atol=1e-4),
+    dict(id="o_h_attn_37x16", code="q = torch.randn(37, 16, dtype=torch.float16); "
+         "kt = torch.randn(16, 37, dtype=torch.float16); v = torch.randn(37, 16, dtype=torch.float16); "
+         "torch.softmax(q @ kt / 4.0, dim=-1) @ v",
+         ref=lambda q, kt, v: [f16(_softmax((f64(q) @ f64(kt)) / 4.0) @ f64(v))], rtol=3e-2, atol=3e-2),
+    dict(id="o_h_mm_bias_odd",
+         code="torch.randn(33, 17, dtype=torch.float16) @ torch.randn(17, 65, dtype=torch.float16) "
+         "+ torch.randn(65, dtype=torch.float16)",
+         ref=lambda a, b, c: [f16(f64(a) @ f64(b) + f64(c))], rtol=2e-2, atol=5e-2),
+    dict(id="o_h_mm_n1", code="torch.randn(40, 32, dtype=torch.float16) @ torch.randn(32, 1, dtype=torch.float16)",
+         ref=lambda a, b: [f16(f64(a) @ f64(b))], rtol=2e-2, atol=5e-2),
+    dict(id="o_h_attn_dv17", code="q = torch.randn(37, 16, dtype=torch.float16); "
+         "kt = torch.randn(16, 37, dtype=torch.float16); v = torch.randn(37, 17, dtype=torch.float16); "
+         "torch.softmax(q @ kt / 4.0, dim=-1) @ v",
+         ref=lambda q, kt, v: [f16(_softmax((f64(q) @ f64(kt)) / 4.0) @ f64(v))], rtol=3e-2, atol=3e-2),
+]

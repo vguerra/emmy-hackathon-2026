@@ -1,0 +1,18 @@
+    Tile[a0_b, a1_b, a0_u, a1_u] (N=726)
+        for a2 in 0..17
+            in0__ar0 = load x0[(((a0_b * 1) + (a0_u * 1)) + 0), a2]
+            in1__bc0 = load x1[a2, ((((a1_b * 3) + (a1_u * 3)) + 0) % 65)]
+            f32 v0__c0_0 = multiply(in0__ar0, in1__bc0)
+            f32 acc0__c0_0 <- add(acc0__c0_0, v0__c0_0)
+            in1__bc1 = load x1[a2, ((((a1_b * 3) + (a1_u * 3)) + 1) % 65)]
+            f32 v0__c0_1 = multiply(in0__ar0, in1__bc1)
+            f32 acc0__c0_1 <- add(acc0__c0_1, v0__c0_1)
+            in1__bc2 = load x1[a2, ((((a1_b * 3) + (a1_u * 3)) + 2) % 65)]
+            f32 v0__c0_2 = multiply(in0__ar0, in1__bc2)
+            f32 acc0__c0_2 <- add(acc0__c0_2, v0__c0_2)
+        if (((((a1_b * 3) + (a1_u * 3)) + 0) < 65)):
+            matmul[(((a0_b * 1) + (a0_u * 1)) + 0), ((((a1_b * 3) + (a1_u * 3)) + 0) % 65)] = acc0__c0_0
+        if (((((a1_b * 3) + (a1_u * 3)) + 1) < 65)):
+            matmul[(((a0_b * 1) + (a0_u * 1)) + 0), ((((a1_b * 3) + (a1_u * 3)) + 1) % 65)] = acc0__c0_1
+        if (((((a1_b * 3) + (a1_u * 3)) + 2) < 65)):
+            matmul[(((a0_b * 1) + (a0_u * 1)) + 0), ((((a1_b * 3) + (a1_u * 3)) + 2) % 65)] = acc0__c0_2

@@ -147,6 +147,29 @@ class FusedMultiplyAdd(unittest.TestCase):
         self.assertTrue(self.accumulate("scaled").startswith("add.rn.f32"))
 
 
+class TensorCoreStores(unittest.TestCase):
+    """A lane's column pair may be one 2-wide store only when it is aligned and never split by a bound."""
+
+    def store(self, n_bound=None):
+        from types import SimpleNamespace
+        guard = None if n_bound is None else (lit(0), n_bound)
+        return SimpleNamespace(n_guard=guard)
+
+    def test_even_stride_without_a_mask_pairs(self):
+        from ptxgen.tensorcore import pair_store_ok
+        self.assertTrue(pair_store_ok(self.store(), 64, F16))
+
+    def test_odd_stride_never_pairs(self):
+        from ptxgen.tensorcore import pair_store_ok
+        self.assertFalse(pair_store_ok(self.store(), 65, F16))      # odd rows start on a 2-byte boundary
+
+    def test_a_masked_pair_needs_a_known_even_bound(self):
+        from ptxgen.tensorcore import pair_store_ok
+        self.assertTrue(pair_store_ok(self.store(lit(64)), 64, F16))
+        self.assertFalse(pair_store_ok(self.store(lit(65)), 66, F16))   # the last column would be lost
+        self.assertFalse(pair_store_ok(self.store(Var("n")), 64, F16))  # unknown at compile time
+
+
 class Swizzle(unittest.TestCase):
     def reference(self, element, shift, mask):
         return element ^ (((element >> shift) & mask) << 3)

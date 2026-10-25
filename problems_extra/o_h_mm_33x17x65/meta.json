@@ -1,0 +1,66 @@
+{
+ "id": "o_h_mm_33x17x65",
+ "code": "torch.randn(33, 17, dtype=torch.float16) @ torch.randn(17, 65, dtype=torch.float16)",
+ "rtol": 0.02,
+ "atol": 0.05,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul_720b89",
+   "arg_order": [
+    "x1",
+    "x0",
+    "matmul"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    512,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f16",
+     "shape": [
+      17,
+      65
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f16",
+     "shape": [
+      33,
+      17
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "f16",
+     "shape": [
+      33,
+      65
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

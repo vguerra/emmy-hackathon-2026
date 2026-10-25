@@ -1,0 +1,76 @@
+{
+ "id": "o_h_mm_bias_odd",
+ "code": "torch.randn(33, 17, dtype=torch.float16) @ torch.randn(17, 65, dtype=torch.float16) + torch.randn(65, dtype=torch.float16)",
+ "rtol": 0.02,
+ "atol": 0.05,
+ "graph_inputs": [
+  "x0",
+  "x1",
+  "x2"
+ ],
+ "graph_outputs": [
+  "add"
+ ],
+ "kernels": [
+  {
+   "node": "add",
+   "entry": "k_matmul_ad3915",
+   "arg_order": [
+    "x1",
+    "x0",
+    "x2",
+    "add"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    512,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f16",
+     "shape": [
+      17,
+      65
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f16",
+     "shape": [
+      33,
+      17
+     ],
+     "seed": 0
+    },
+    {
+     "name": "x2",
+     "dtype": "f16",
+     "shape": [
+      65
+     ],
+     "seed": 2
+    },
+    {
+     "name": "add",
+     "dtype": "f16",
+     "shape": [
+      33,
+      65
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

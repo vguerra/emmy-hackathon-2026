@@ -23,7 +23,7 @@ python compile.py path/to/<kernel>.ir.json --dump-graph     # also pretty-prints
 
 | level | what | count |
 |---|---|---|
-| ran on the RTX 5090 and matched the reference | the 15 open problems, plus 104 probe problems in `problems_extra/` generated from my own torch expressions (other shapes, ops, block sizes, dtypes, tensor cores, copy-engine knobs) | 119 |
+| ran on the RTX 5090 and matched the reference | the 15 open problems, plus 127 probe problems in `problems_extra/` generated from my own torch expressions (other shapes, ops, block sizes, dtypes, tensor cores, copy-engine knobs, and odd extents that no tile or thread count divides) | 142 |
 | assembled with `ptxas`, not executed | a TMA matmul in `problems_asm/` — the runner API cannot pass a tensor-map argument | 1 |
 
 TMA cannot be run through this evaluation at all: the problem generator itself fails to package a TMA kernel
@@ -64,6 +64,10 @@ Decisions worth knowing about:
   (`_c0_[_r0]`) is unrolled at compile time with the axis bound to an immediate.
 - **Swizzle is an address transform**, `e ^ (((e >> shift) & mask) << 3)`, applied to the fill (`cp.async`) and the
   drain (`ldmatrix`) alike, so they agree by construction.
+- **Tensor-core stores pair columns only when that is safe.** A lane's two adjacent C columns go out as one 2-wide
+  store when the row stride is even and any column mask has a known even bound; otherwise each column is stored on
+  its own with its own bounds check (a 2-wide store needs a 2-element-aligned address, and a mask between the pair
+  would drop the last column). Odd-extent probes (`o_h_mm_33x17x65`) found this.
 - **Large shared memory** switches to a single `extern .shared` array with 16-byte-aligned slices.
 
 ## Performance
@@ -121,7 +125,7 @@ python tools/bench.py problems_extra/y_m_1024        # warm timing; --json / --c
 
 - `tests/test_dtypes.py`, `tests/test_lowering.py` — unit tests of immediates, conversions, index expressions,
   swizzle (executed against a reference), arithmetic dispatch, rendering.
-- `tests/test_ptx_structure.py` — compiles all 127 kernels and lints the PTX without `ptxas`: ASCII only, parameters
+- `tests/test_ptx_structure.py` — compiles all 150 kernels and lints the PTX without `ptxas`: ASCII only, parameters
   equal `arg_order`, no register used past its declaration, no branch to a missing label.
 - `tools/expressions_extra.py` — the torch expressions behind `problems_extra/`; regenerate one with
   `python tools/generate.py tools/expressions_extra.py --emmy <emmy> --out problems_extra --only <id>`.
@@ -139,4 +143,6 @@ Each of these stops with a `NotImplementedError` naming the construct, never wit
 - `wgmma` and `SetMaxNReg` (Hopper `sm_90a` only; the runner is an `sm_120` part).
 - f16-accumulate `mma` (packed C fragments, `FragmentPromote`), `Tile.aux_threads` (warp-specialised producers),
   `TreeHalve.inner`, warp shuffles of 64-bit values, transcendental ops on `f64`.
-- A cooperative Tile whose `N` is not a multiple of `block_threads`.
+- A cooperative Tile whose `N` is not a multiple of `block_threads`. None of the odd-length reductions, thread counts
+  (`t32`..`t256`), default schedules or grid splits in the `o_` probes makes emmy emit one: its reductions always give
+  each block a whole number of threads.
