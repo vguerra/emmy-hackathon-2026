@@ -16,7 +16,7 @@ from .tma import (emit_mbarrier_arrive, emit_mbarrier_arrive_expect_tx, emit_mba
                   emit_tma_descriptor, emit_tma_load)
 from .tensorcore import (emit_fragment_apply, emit_fragment_repack, emit_fragment_row_reduce, emit_ldmatrix,
                          emit_mma, emit_reg_fragment, emit_reg_store)
-from .memory import emit_address, emit_cp_async, emit_ld, emit_load, emit_smem, emit_st, emit_write
+from .memory import emit_address, emit_cp_async, emit_ld, emit_load, emit_smem, emit_st, emit_write, grouped_loads
 
 
 def emit_cond(em: PtxEmitter, stmt: Cond, arg_types: dict) -> None:
@@ -107,9 +107,13 @@ def emit_counted_loop(em: PtxEmitter, stmt: Loop | StridedLoop, start: Expr, end
     pred = em.reg("p")
     em.emit(f"setp.ge.s32 {pred}, {index}, {bound};")
     em.emit(f"@{pred} bra {done};")
+    outer_groups = em.grouped_loads
+    em.grouped_loads = grouped_loads(em, stmt, arg_types, copies) if copies > 1 else set()
     for copy in range(copies):                          # copy k runs the body at axis = index + k * step
         em.vars[stmt.axis.name] = int_op(em, "+", index, str(copy * int(step))) if copy else index
+        em.unroll_copy = copy
         emit_stmts(em, stmt.body, arg_types)
+    em.grouped_loads = outer_groups
     em.emit(f"add.s32 {index}, {index}, {step if copies == 1 else copies * int(step)};")
     em.emit(f"bra {top};")
     em.label(done)

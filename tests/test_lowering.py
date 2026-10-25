@@ -170,6 +170,43 @@ class TensorCoreStores(unittest.TestCase):
         self.assertFalse(pair_store_ok(self.store(Var("n")), 64, F16))  # unknown at compile time
 
 
+class LoadGrouping(unittest.TestCase):
+    """Consecutive-element loads of an unrolled loop become one 16-byte vector load, when provably safe."""
+
+    def inner_loop(self, problem, kernel):
+        from emmy.compiler.ir.stmt.blocks import Loop, StridedLoop
+        from ptxgen.loader import find_kernel, find_tile, get_arg_types, load_ir
+        graph, meta = load_ir(str(ROOT / problem / f"{kernel}.ir.json"))
+        kernel_op = find_kernel(graph)
+        loops = find_tile(kernel_op).body.iter_of_type(Loop, StridedLoop)
+        loop = next(l for l in loops if l.axis.name == "a2" and not any(
+            isinstance(s, (Loop, StridedLoop)) for s in l.body.iter() if s is not l))
+        return loop, get_arg_types(meta, kernel_op.name)
+
+    def test_only_the_contiguous_operand_is_grouped(self):
+        from ptxgen.memory import grouped_loads
+        loop, types = self.inner_loop("problems/a01_attention", "k_matmul_softmax_reduce_b55365")
+        grouped = grouped_loads(PtxEmitter(), loop, types, 4)
+        loads = {s.input: id(s) for s in loop.body if hasattr(s, "input")}
+        self.assertEqual(grouped, {loads["q"]})             # q[row, k]; kt[k, j] is strided
+
+    def test_a_row_length_that_is_not_a_multiple_of_the_group_is_left_alone(self):
+        from ptxgen.memory import grouped_loads
+        loop, types = self.inner_loop("problems/a01_attention", "k_matmul_softmax_reduce_b55365")
+        types = {**types, "q": (types["q"][0], [64, 63])}   # rows would no longer start 16-byte aligned
+        self.assertEqual(grouped_loads(PtxEmitter(), loop, types, 4), set())
+
+    def test_no_grouping_without_unrolling(self):
+        from ptxgen.memory import grouped_loads
+        loop, types = self.inner_loop("problems/a01_attention", "k_matmul_softmax_reduce_b55365")
+        self.assertEqual(grouped_loads(PtxEmitter(), loop, types, 1), set())
+
+    def test_the_vector_load_is_in_the_ptx(self):
+        from compile import compile_ir
+        text = compile_ir(str(ROOT / "problems/a01_attention/k_matmul_softmax_reduce_b55365.ir.json"))
+        self.assertEqual(text.count("ld.global.v4.f32"), 4)
+
+
 class Swizzle(unittest.TestCase):
     def reference(self, element, shift, mask):
         return element ^ (((element >> shift) & mask) << 3)

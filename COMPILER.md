@@ -80,10 +80,11 @@ this against after all of it, on the problems where it mattered:
 |---|---|---|---|
 | m01_matmul_512 (f32, shared-memory tiles) | 99.0 | 21.2 | 4.7x |
 | y_m_1024 (f32 matmul 1024x256x512) | 92.9 | 19.1 | 4.9x |
-| x_a_noscale (f32 attention, 1 072 µs) | 1071.6 | 287.4 | 3.7x |
-| y_a_256x64 (f32 attention) | 3870.0 | 989.9 | 3.9x |
-| w_h_softmax_mm (f16 matmul + softmax) | 3107.3 | 1460.1 | 2.1x |
-| a01_attention | 115.3 | 84.6 | 1.4x |
+| x_a_noscale (f32 attention, 1 072 µs) | 1071.6 | 164.4 | 6.5x |
+| y_a_256x64 (f32 attention) | 3870.0 | 537.2 | 7.2x |
+| w_h_softmax_mm (f16 matmul + softmax) | 3107.3 | 1311.1 | 2.4x |
+| a01_attention | 115.3 | 53.9 | 2.1x |
+| y_a_wide (f32 attention) | 240.3 | 70.1 | 3.4x |
 
 Most problems run in 3-5 µs warm and did not change. What was done:
 
@@ -99,17 +100,29 @@ Most problems run in 3-5 µs warm and did not change. What was done:
    `acc = acc*alpha + ...`) always stays strict: fusing the multiply into it made the small attention kernels
    `a02_attention_128` and `y_a_dv` about 10% slower than the baseline, while plain accumulators and plain
    assignments gain from fusing. Found by timing each kernel with unrolling and fusion switched off in turn.
+4. **Consecutive loads of an unrolled loop become one vector load.** In the f32 attention kernels the query row
+   `q[row, k]` is read one element per iteration. When four unrolled copies read four consecutive elements, the
+   first copy issues one `ld.global.v4.f32` and the other three reuse its registers. Only done when it is provably
+   safe: the load is a direct child of the loop body, its last index is exactly the loop axis, the loop starts at a
+   multiple of 4 with step 1, the buffer's row length is a multiple of 4 (so every group is 16-byte aligned), the
+   elements are 2 or 4 bytes, and the body never writes that buffer. Buffer base addresses are assumed 16-byte
+   aligned, as `cudaMalloc` guarantees. On top of the other three it made the larger f32 attention kernels another 1.6x-3.3x faster.
 
-Tried and dropped, because they measured as no change: `ld.global.nc` for read-only inputs (the plain load already
-uses the L1 cache on these GPUs).
+Tried and dropped because they were slower or measured as no change:
+
+- **Merging sibling loops** (loop jamming) so a thread's ten row-accumulators advance side by side and share
+  loads. It was correct but 1.1-2.4x *slower* at every merge count and unroll factor tried. The cause is `ptxas`:
+  on the original separate loops it unrolls and pipelines them itself (128 registers, 35 KB for `a01_attention`),
+  and on a larger merged body it does not (48 registers, 17 KB). The compiler's structure feeds `ptxas`'s own
+  heuristics, so a bigger loop body is not automatically better.
+- **A different unroll factor per kernel.** Factors 8, 16 and 32 beat 4 on a couple of kernels
+  (`y_a_256x64` -20% at 16) and lost on others (`a01_attention` +15% at 8), so one global factor stays.
+- `ld.global.nc` for read-only inputs (the plain load already uses the L1 cache on these GPUs).
 
 **Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
-baseline commit `2fca374` and on the optimised compiler: 15 faster, 94 unchanged, 3 flagged slower. Those three
-(`y_p_3d`, `y_m_small`, `x_r_odd_sum`) are 3 µs kernels that differ by 0.3-0.7 µs, and a different handful is flagged
-on every run, so they are timer noise rather than regressions; the two kernels that were genuinely slower
-(`a02_attention_128`, `y_a_dv`) are now faster than the baseline. Geometric mean 1.08x; the unchanged ones are
-launch-bound at 3-5 µs. Regenerate it with
-`python tools/compare_commits.py 2fca374 HEAD`.
+baseline commit `2fca374` and on the optimised compiler: 15 faster, 96 unchanged, 1 flagged slower (`y_r_t256`,
+4.8 to 5.5 µs, a launch-bound kernel, so timer noise), geometric mean 1.12x. The unchanged ones are launch-bound at
+3-5 µs. Regenerate it with `python tools/compare_commits.py 2fca374 HEAD`.
 
 ## Testing
 

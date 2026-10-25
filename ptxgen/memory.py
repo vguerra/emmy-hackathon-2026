@@ -3,11 +3,12 @@
 import math
 
 from emmy.compiler.ir.kernel.ir import CpAsyncCopy, Smem
+from emmy.compiler.ir.expr import Literal, Var
 from emmy.compiler.ir.stmt.leaves import Load, Write
 
 from .dtypes import F16, Ty, emit_convert, emit_reg, F32, ty
 from .emitter import PtxEmitter, is_imm
-from .expr import emit_flat_offset, emit_int_expr, int_op
+from .expr import emit_flat_offset, emit_int_expr, int_op, uses_var
 
 # Vector widths PTX allows per element size. Eight f16 values are not a vector type: they are moved as
 # four packed 32-bit words (see emit_ld / emit_st).
@@ -118,10 +119,50 @@ def emit_st(em: PtxEmitter, space: str, addr: str, t: Ty, values: list[str]) -> 
         em.emit(f"st{space}{vector_suffix(n, 2)}.b16 [{addr}], {operands};")
 
 
+LOAD_GROUP = 4          # consecutive loop iterations whose loads of consecutive elements become one vector load
+
+
+def grouped_loads(em: PtxEmitter, loop, arg_types: dict, copies: int) -> set[int]:
+    """The Loads of an unrolled loop body whose `LOAD_GROUP` neighbouring copies can be fetched at once.
+
+    A Load qualifies when each group of copies reads LOAD_GROUP consecutive, 16-byte-aligned elements that
+    the scalar loads would have read anyway, and nothing in the loop can change them in between:
+    the load runs every iteration (a direct child of the body); its last index is exactly the loop axis and no
+    other index mentions it; the loop starts at a multiple of the group and steps by one; the buffer is a
+    global one whose row length is a multiple of the group, with 2- or 4-byte elements; and the body never
+    writes that buffer. Buffer base addresses are assumed 16-byte aligned, as cudaMalloc guarantees.
+    """
+    start, step = getattr(loop, "start", Literal(0, "int")), getattr(loop, "step", Literal(1, "int"))
+    if copies % LOAD_GROUP or not (isinstance(start, Literal) and isinstance(step, Literal)):
+        return set()
+    if int(step.value) != 1 or int(start.value) % LOAD_GROUP:
+        return set()
+    written = set()
+    for node in loop.body.iter():
+        written.update(getattr(node, name) for name in ("output", "dst_buffer") if hasattr(node, name))
+    chosen = set()
+    for stmt in loop.body:
+        if not isinstance(stmt, Load) or len(stmt.names) != 1 or stmt.input in em.smem_base or stmt.input in written:
+            continue
+        t, shape = buffer_type(em, arg_types, stmt.input), buffer_shape(em, arg_types, stmt.input)
+        if t.nbytes not in (2, 4) or len(stmt.index) != len(shape) or shape[-1] % LOAD_GROUP:
+            continue
+        if stmt.index[-1] == Var(loop.axis.name) and not any(uses_var(e, loop.axis.name) for e in stmt.index[:-1]):
+            chosen.add(id(stmt))
+    return chosen
+
+
 def emit_load(em: PtxEmitter, stmt: Load, arg_types: dict) -> None:
     """One value, or several consecutive values as a vector load."""
     t = buffer_type(em, arg_types, stmt.input)
     shape = buffer_shape(em, arg_types, stmt.input)
+    if id(stmt) in em.grouped_loads:                    # the first copy of a group fetches it, the rest reuse it
+        lane = em.unroll_copy % LOAD_GROUP
+        if lane == 0:
+            addr = emit_address(em, stmt.input, emit_flat_offset(em, stmt.index, shape), t.nbytes)
+            em.group_regs[id(stmt)] = emit_ld(em, ".global", addr, t, LOAD_GROUP)
+        em.bind(stmt.names[0], em.group_regs[id(stmt)][lane], t)
+        return
     addr = emit_address(em, stmt.input, emit_flat_offset(em, stmt.index, shape), t.nbytes)
     regs = emit_ld(em, mem_space(em, stmt.input), addr, t, len(stmt.names))
     for name, reg in zip(stmt.names, regs):

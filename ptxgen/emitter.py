@@ -28,6 +28,9 @@ class PtxEmitter:
         self.tma_params = {}                            # tensor-map name -> its .param symbol
         self.allow_fma = False                          # tolerance permits ptxas to fuse a multiply and an add
         self.cse = {}                                   # (opcode, operands) -> register already holding that value
+        self.grouped_loads = set()                      # id() of Load statements fetched LOAD_GROUP copies at a time
+        self.group_regs = {}                            # id() of such a Load -> registers of the current group
+        self.unroll_copy = 0                            # which copy of an unrolled loop body is being emitted
         self.label_count = 0
         self.dynamic_smem = False                       # shared arrays live in one extern array
         self.smem_used = 0                              # bytes handed out of it so far

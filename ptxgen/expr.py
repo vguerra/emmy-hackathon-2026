@@ -54,6 +54,17 @@ def int_op(em: PtxEmitter, op: str, left: str, right: str) -> str:
     return em.cached((op, left, right), emit)
 
 
+def uses_var(expr: Expr, name: str) -> bool:
+    """True when the expression mentions variable `name`."""
+    if isinstance(expr, Var):
+        return expr.name == name
+    if isinstance(expr, BinaryExpr):
+        return uses_var(expr.left, name) or uses_var(expr.right, name)
+    if isinstance(expr, TernaryExpr):
+        return any(uses_var(e, name) for e in (expr.cond, expr.if_true, expr.if_false))
+    return False
+
+
 def emit_int_expr(em: PtxEmitter, expr: Expr) -> str:
     """Compile an integer index expression; returns a register or an immediate."""
     if isinstance(expr, Var):
