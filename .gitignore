@@ -1,8 +1,33 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS and editors
 .DS_Store
+.idea/
+.vscode/
+*.swp
 
 # organizer-only evaluation material
 hidden/
 hidden_full/
 expressions_hidden.py
+
+# scratch output (examples/compiled/ is tracked on purpose, so only the repo root is ignored)
+/*.ptx
+/*.cubin
+/out/
+*.log
+
+# benchmark snapshots made with tools/bench.py --json
+/bench*.json
+/baseline*.json
+
+# local agent session notes
+.agent-session.txt
