@@ -9,7 +9,7 @@ from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign, Init, Let, Load, Select, Write
 
 from .dtypes import emit_reg, emit_shfl_xor, identity_imm, ty
-from .elementwise import MOVES, binop, emit_assign, emit_let, emit_select, operand
+from .elementwise import BINOPS, MOVES, binop, emit_assign, emit_let, emit_select, operand
 from .emitter import PtxEmitter
 from .expr import emit_int_expr, emit_pred, int_op
 from .tma import (emit_mbarrier_arrive, emit_mbarrier_arrive_expect_tx, emit_mbarrier_init, emit_mbarrier_wait,
@@ -144,7 +144,10 @@ def emit_accum(em: PtxEmitter, stmt: Accum) -> None:
     left = em.vars[stmt.base] if stmt.base else acc     # base: a rescaled value read instead of acc
     t = em.type_of(stmt.name)
     value = operand(em, stmt.value, t)
-    em.emit(f"{binop(em, t.cls, stmt.op.name)} {acc}, {left}, {value};")
+    # A rescaled accumulator (online softmax: acc = acc*alpha + ...) stays strict: letting ptxas fuse the multiply
+    # into it measured ~10% slower on the small attention kernels. Plain accumulators may fuse.
+    opcode = BINOPS[t.cls][stmt.op.name] if stmt.base else binop(em, t.cls, stmt.op.name)
+    em.emit(f"{opcode} {acc}, {left}, {value};")
 
 
 def emit_warp_shuffle(em: PtxEmitter, stmt: WarpShuffle) -> None:

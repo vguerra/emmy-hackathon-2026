@@ -50,7 +50,7 @@ LOOP_1:
         ex2.approx.f32 %f11, %f10;
         mul.f32 %f12, %f1, %f8;
         mul.f32 %f13, %f11, %f3;
-        add.f32 %f1, %f12, %f13;
+        add.rn.f32 %f1, %f12, %f13;
         max.f32 %f2, %f2, %f4;
         add.s32 %r9, %r9, 128;
         bra LOOP_1;

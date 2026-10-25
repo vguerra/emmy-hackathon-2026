@@ -2,13 +2,14 @@
 """Benchmark two commits of the compiler on the same problems and write a comparison table.
 
     python tools/compare_commits.py d1a261b HEAD                       # problems/ and problems_extra/
+    python tools/compare_commits.py d1a261b WORKTREE                   # include uncommitted changes
     python tools/compare_commits.py d1a261b HEAD problems -k attention
     python tools/compare_commits.py d1a261b HEAD --out docs/perf-comparison.md
 
 Each commit is checked out into a temporary git worktree and measured with that commit's own
 tools/bench.py (warm median of --iters launches), so the numbers come from the compiler as it was
 then. Raw results are written to docs/perf/<sha>.json; --reuse skips the measurement when that file exists
-(useful to re-render the table). The head ref is the committed state, not the working tree.
+(useful to re-render the table). A ref is a commit, or WORKTREE for the uncommitted working tree.
 Needs network access to the runner; worktrees live in a temp dir and are removed afterwards.
 """
 
@@ -22,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "docs" / "perf"
+WORKTREE = "WORKTREE"              # as a ref: the working tree, uncommitted changes included
 SAME_BAND = 0.10                    # a change within +-10% is reported as unchanged (run-to-run noise)
 
 
@@ -31,20 +33,23 @@ def git(*args: str, cwd: Path = ROOT) -> str:
 
 def measure(ref: str, paths: list[str], iters: int, reuse: bool) -> tuple[str, dict[str, float]]:
     """(short sha, {problem: median us}) for `ref`: the cached file with --reuse, else a fresh worktree run."""
-    sha = git("rev-parse", "--short", ref)
+    sha = "worktree" if ref == WORKTREE else git("rev-parse", "--short", ref)
     cached = CACHE / f"{sha}.json"
     if reuse and cached.exists():
         return sha, json.loads(cached.read_text())
     with tempfile.TemporaryDirectory() as scratch:
-        tree = Path(scratch) / sha
-        git("worktree", "add", "--detach", str(tree), sha)
-        try:
-            out = Path(scratch) / "result.json"
-            subprocess.run([sys.executable, "tools/bench.py", *paths, "--iters", str(iters), "--json", str(out)],
-                           cwd=tree, check=True)
-            results = json.loads(out.read_text())
-        finally:
-            git("worktree", "remove", "--force", str(tree))
+        out = Path(scratch) / "result.json"
+        bench = [sys.executable, "tools/bench.py", *paths, "--iters", str(iters), "--json", str(out)]
+        if ref == WORKTREE:                              # uncommitted changes, measured where they are
+            subprocess.run(bench, cwd=ROOT, check=True)
+        else:
+            tree = Path(scratch) / sha
+            git("worktree", "add", "--detach", str(tree), sha)
+            try:
+                subprocess.run(bench, cwd=tree, check=True)
+            finally:
+                git("worktree", "remove", "--force", str(tree))
+        results = json.loads(out.read_text())
     CACHE.mkdir(parents=True, exist_ok=True)
     cached.write_text(json.dumps(results, indent=1, sort_keys=True))
     return sha, results

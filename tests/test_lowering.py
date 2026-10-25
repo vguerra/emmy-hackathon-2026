@@ -130,6 +130,22 @@ class FusedMultiplyAdd(unittest.TestCase):
     def test_contractable_when_the_tolerance_allows(self):
         self.assertTrue(self.multiply(True).startswith("mul.f32"))
 
+    def accumulate(self, base):
+        from ptxgen.control import emit_accum
+        from types import SimpleNamespace
+        em = PtxEmitter()
+        em.allow_fma = True
+        for name in ("acc", "value", "scaled"):
+            em.bind(name, em.reg("f"), F32)
+        emit_accum(em, SimpleNamespace(name="acc", base=base, value="value", op=SimpleNamespace(name="add")))
+        return em.lines[-1].strip()
+
+    def test_a_plain_accumulator_may_fuse(self):
+        self.assertTrue(self.accumulate(None).startswith("add.f32"))
+
+    def test_a_rescaled_accumulator_stays_strict(self):
+        self.assertTrue(self.accumulate("scaled").startswith("add.rn.f32"))
+
 
 class Swizzle(unittest.TestCase):
     def reference(self, element, shift, mask):

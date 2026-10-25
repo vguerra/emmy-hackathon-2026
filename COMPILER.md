@@ -76,10 +76,10 @@ this against after all of it, on the problems where it mattered:
 |---|---|---|---|
 | m01_matmul_512 (f32, shared-memory tiles) | 99.0 | 21.2 | 4.7x |
 | y_m_1024 (f32 matmul 1024x256x512) | 92.9 | 19.1 | 4.9x |
-| x_a_noscale (f32 attention, 1 072 µs) | 1071.6 | 260.4 | 4.1x |
-| y_a_256x64 (f32 attention) | 3860.3 | 997.8 | 3.9x |
-| w_h_softmax_mm (f16 matmul + softmax) | 3116.5 | 1468.9 | 2.1x |
-| a01_attention | 115.3 | 92.7 | 1.2x |
+| x_a_noscale (f32 attention, 1 072 µs) | 1071.6 | 287.4 | 3.7x |
+| y_a_256x64 (f32 attention) | 3870.0 | 989.9 | 3.9x |
+| w_h_softmax_mm (f16 matmul + softmax) | 3107.3 | 1460.1 | 2.1x |
+| a01_attention | 115.3 | 84.6 | 1.4x |
 
 Most problems run in 3-5 µs warm and did not change. What was done:
 
@@ -91,19 +91,18 @@ Most problems run in 3-5 µs warm and did not change. What was done:
    block and `ptxas` can issue them together instead of waiting out each load's latency inside a two-instruction
    loop body. Factor 4 was chosen by measuring 2, 4, 8 and 16.
 3. **Multiply-add may fuse when the tolerance is non-zero.** With a zero tolerance every arithmetic op keeps its
-   `.rn` spelling, which forbids `ptxas` from contracting it.
+   `.rn` spelling, which forbids `ptxas` from contracting it. A *rescaled* accumulator (`Accum.base`, the online-softmax
+   `acc = acc*alpha + ...`) always stays strict: fusing the multiply into it made the small attention kernels
+   `a02_attention_128` and `y_a_dv` about 10% slower than the baseline, while plain accumulators and plain
+   assignments gain from fusing. Found by timing each kernel with unrolling and fusion switched off in turn.
 
 Tried and dropped, because they measured as no change: `ld.global.nc` for read-only inputs (the plain load already
 uses the L1 cache on these GPUs).
 
 **Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
-baseline commit `d1a261b` and on the optimised one: 14 faster, 96 unchanged, 2 slower, geometric mean 1.09x (the
-unchanged ones are launch-bound at 3-5 µs). Regenerate it with `python tools/compare_commits.py d1a261b HEAD`.
-
-**Known regressions.** Two small attention kernels got about 10% slower: `a02_attention_128` (58.0 to 64.2 µs) and
-`y_a_dv` (62.1 to 70.3 µs). The first showed the same slowdown in two separate runs, so it is not noise. The cause is
-not confirmed; the likely culprits are the x4 unrolling (more registers live per thread, fewer resident warps on a
-kernel with few blocks) and fma contraction (`ptxas` may schedule the fused instructions differently). Bisecting each optimisation on those two kernels would settle it.
+baseline commit `d1a261b` and on the optimised compiler: 14 faster, 97 unchanged, 1 within timer noise (a 0.6 µs
+difference on a 3 µs kernel), geometric mean 1.09x; the unchanged ones are launch-bound at 3-5 µs. Regenerate it with
+`python tools/compare_commits.py d1a261b HEAD`.
 
 ## Testing
 
