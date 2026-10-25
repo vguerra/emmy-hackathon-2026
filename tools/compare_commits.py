@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Benchmark two commits of the compiler on the same problems and write a comparison table.
 
-    python tools/compare_commits.py d1a261b HEAD                       # problems/ and problems_extra/
-    python tools/compare_commits.py d1a261b WORKTREE                   # include uncommitted changes
-    python tools/compare_commits.py d1a261b HEAD problems -k attention
-    python tools/compare_commits.py d1a261b HEAD --out docs/perf-comparison.md
+    python tools/compare_commits.py 2fca374 HEAD                       # problems/ and problems_extra/
+    python tools/compare_commits.py 2fca374 WORKTREE                   # include uncommitted changes
+    python tools/compare_commits.py 2fca374 HEAD problems -k attention
+    python tools/compare_commits.py 2fca374 HEAD --out docs/perf-comparison.md
 
 Each commit is checked out into a temporary git worktree and measured with that commit's own
 tools/bench.py (warm median of --iters launches), so the numbers come from the compiler as it was
@@ -100,7 +100,7 @@ def report(base_sha: str, head_sha: str, base: dict[str, float], head: dict[str,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("base", help="git ref of the baseline, e.g. d1a261b")
+    parser.add_argument("base", help="git ref of the baseline, e.g. 2fca374")
     parser.add_argument("head", nargs="?", default="HEAD", help="git ref to compare against (default HEAD)")
     parser.add_argument("paths", nargs="*", default=["problems", "problems_extra"],
                         help="problem folders, or folders of problem folders")

@@ -100,9 +100,12 @@ Tried and dropped, because they measured as no change: `ld.global.nc` for read-o
 uses the L1 cache on these GPUs).
 
 **Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
-baseline commit `d1a261b` and on the optimised compiler: 14 faster, 97 unchanged, 1 within timer noise (a 0.6 µs
-difference on a 3 µs kernel), geometric mean 1.09x; the unchanged ones are launch-bound at 3-5 µs. Regenerate it with
-`python tools/compare_commits.py d1a261b HEAD`.
+baseline commit `2fca374` and on the optimised compiler: 15 faster, 94 unchanged, 3 flagged slower. Those three
+(`y_p_3d`, `y_m_small`, `x_r_odd_sum`) are 3 µs kernels that differ by 0.3-0.7 µs, and a different handful is flagged
+on every run, so they are timer noise rather than regressions; the two kernels that were genuinely slower
+(`a02_attention_128`, `y_a_dv`) are now faster than the baseline. Geometric mean 1.08x; the unchanged ones are
+launch-bound at 3-5 µs. Regenerate it with
+`python tools/compare_commits.py 2fca374 HEAD`.
 
 ## Testing
 
