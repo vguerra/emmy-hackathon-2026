@@ -96,6 +96,15 @@ Most problems run in 3-5 µs warm and did not change. What was done:
 Tried and dropped, because they measured as no change: `ld.global.nc` for read-only inputs (the plain load already
 uses the L1 cache on these GPUs).
 
+**Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
+baseline commit `d1a261b` and on the optimised one: 14 faster, 96 unchanged, 2 slower, geometric mean 1.09x (the
+unchanged ones are launch-bound at 3-5 µs). Regenerate it with `python tools/compare_commits.py d1a261b HEAD`.
+
+**Known regressions.** Two small attention kernels got about 10% slower: `a02_attention_128` (58.0 to 64.2 µs) and
+`y_a_dv` (62.1 to 70.3 µs). The first showed the same slowdown in two separate runs, so it is not noise. The cause is
+not confirmed; the likely culprits are the x4 unrolling (more registers live per thread, fewer resident warps on a
+kernel with few blocks) and fma contraction (`ptxas` may schedule the fused instructions differently). Bisecting each optimisation on those two kernels would settle it.
+
 ## Testing
 
 ```bash
