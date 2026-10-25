@@ -9,9 +9,9 @@ from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign, Init, Let, Load, Select, Write
 
 from .dtypes import emit_reg, emit_shfl_xor, identity_imm, ty
-from .elementwise import BINOPS, MOVES, emit_assign, emit_let, emit_select, operand
+from .elementwise import MOVES, binop, emit_assign, emit_let, emit_select, operand
 from .emitter import PtxEmitter
-from .expr import emit_int_expr, emit_pred
+from .expr import emit_int_expr, emit_pred, int_op
 from .tma import (emit_mbarrier_arrive, emit_mbarrier_arrive_expect_tx, emit_mbarrier_init, emit_mbarrier_wait,
                   emit_tma_descriptor, emit_tma_load)
 from .tensorcore import (emit_fragment_apply, emit_fragment_repack, emit_fragment_row_reduce, emit_ldmatrix,
@@ -59,6 +59,23 @@ def indexes_fragments(stmt: Loop | StridedLoop) -> bool:
     return any(isinstance(r, str) and tag in r for r in refs)
 
 
+UNROLL_FACTOR = 4          # copies of an innermost loop body per back-edge; 1 disables
+
+
+def unroll_factor(stmt: Loop | StridedLoop, values: range | None) -> int:
+    """How many copies of the body to emit per trip, or 1 for a loop that should stay as it is.
+
+    A loop is unrolled when its trip count is a known multiple of the factor and it contains no
+    other loop, so the copies' independent loads share one basic block and ptxas can issue them
+    together instead of waiting out each load's latency inside a tiny loop body.
+    """
+    if values is None or UNROLL_FACTOR <= 1 or len(values) <= UNROLL_FACTOR or len(values) % UNROLL_FACTOR:
+        return 1
+    if any(isinstance(s, (Loop, StridedLoop)) for s in stmt.body.iter()):
+        return 1
+    return UNROLL_FACTOR
+
+
 def emit_unrolled_loop(em: PtxEmitter, stmt: Loop | StridedLoop, values: range, arg_types: dict) -> None:
     """Emit the body once per iteration with the axis bound to an immediate."""
     for value in values:
@@ -79,6 +96,7 @@ def emit_counted_loop(em: PtxEmitter, stmt: Loop | StridedLoop, start: Expr, end
                 em.bind(acc.name, em.reg(t.cls), t)
             em.emit(f"{MOVES[t.cls]} {em.vars[acc.name]}, {identity_imm(t, acc.op.name, acc.op.identity)};")
 
+    copies = unroll_factor(stmt, values)
     index = em.reg("r")
     em.emit(f"mov.s32 {index}, {emit_int_expr(em, start)};")
     bound = emit_int_expr(em, end)
@@ -89,9 +107,10 @@ def emit_counted_loop(em: PtxEmitter, stmt: Loop | StridedLoop, start: Expr, end
     pred = em.reg("p")
     em.emit(f"setp.ge.s32 {pred}, {index}, {bound};")
     em.emit(f"@{pred} bra {done};")
-    em.vars[stmt.axis.name] = index
-    emit_stmts(em, stmt.body, arg_types)
-    em.emit(f"add.s32 {index}, {index}, {step};")
+    for copy in range(copies):                          # copy k runs the body at axis = index + k * step
+        em.vars[stmt.axis.name] = int_op(em, "+", index, str(copy * int(step))) if copy else index
+        emit_stmts(em, stmt.body, arg_types)
+    em.emit(f"add.s32 {index}, {index}, {step if copies == 1 else copies * int(step)};")
     em.emit(f"bra {top};")
     em.label(done)
 
@@ -125,7 +144,7 @@ def emit_accum(em: PtxEmitter, stmt: Accum) -> None:
     left = em.vars[stmt.base] if stmt.base else acc     # base: a rescaled value read instead of acc
     t = em.type_of(stmt.name)
     value = operand(em, stmt.value, t)
-    em.emit(f"{BINOPS[t.cls][stmt.op.name]} {acc}, {left}, {value};")
+    em.emit(f"{binop(em, t.cls, stmt.op.name)} {acc}, {left}, {value};")
 
 
 def emit_warp_shuffle(em: PtxEmitter, stmt: WarpShuffle) -> None:

@@ -25,6 +25,7 @@ def compile_ir(ir_path: str, dump: bool = False) -> str:
         dump_graph(graph)
     tile = find_tile(kernel)
     em = PtxEmitter()
+    em.allow_fma = meta.get("rtol", 0) > 0 or meta.get("atol", 0) > 0
     emit_prologue(em, tile, arg_order)
     emit_body(em, tile, arg_types)
     return render(kernel.name, arg_order, em)

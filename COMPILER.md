@@ -66,6 +66,36 @@ Decisions worth knowing about:
   drain (`ldmatrix`) alike, so they agree by construction.
 - **Large shared memory** switches to a single `extern .shared` array with 16-byte-aligned slices.
 
+## Performance
+
+The launch geometry is fixed by `meta.json`, so the compiler's levers are the instructions each thread runs and how
+its memory accesses overlap. Measured with `tools/bench.py` (median of 100 launches after warmup), before any of
+this against after all of it, on the problems where it mattered:
+
+| problem | before (µs) | after (µs) | speed-up |
+|---|---|---|---|
+| m01_matmul_512 (f32, shared-memory tiles) | 99.0 | 21.2 | 4.7x |
+| y_m_1024 (f32 matmul 1024x256x512) | 92.9 | 19.1 | 4.9x |
+| x_a_noscale (f32 attention, 1 072 µs) | 1071.6 | 260.4 | 4.1x |
+| y_a_256x64 (f32 attention) | 3860.3 | 997.8 | 3.9x |
+| w_h_softmax_mm (f16 matmul + softmax) | 3116.5 | 1468.9 | 2.1x |
+| a01_attention | 115.3 | 92.7 | 1.2x |
+
+Most problems run in 3-5 µs warm and did not change. What was done:
+
+1. **Index arithmetic is value-numbered** (`int_op`): immediates fold, `x+0` / `x*1` vanish, and a repeated
+   `(op, operand, operand)` is emitted once per straight-line region (any label forgets). The inner loop of the
+   f32 matmul spent ~60 integer instructions on every 4 multiply-adds, most of it recomputed `div`/`rem`/`mul`
+   chains. This alone took `m01` from 99 to 40 µs.
+2. **Innermost loops with a static trip count are unrolled by 4**, so their independent loads sit in one basic
+   block and `ptxas` can issue them together instead of waiting out each load's latency inside a two-instruction
+   loop body. Factor 4 was chosen by measuring 2, 4, 8 and 16.
+3. **Multiply-add may fuse when the tolerance is non-zero.** With a zero tolerance every arithmetic op keeps its
+   `.rn` spelling, which forbids `ptxas` from contracting it.
+
+Tried and dropped, because they measured as no change: `ld.global.nc` for read-only inputs (the plain load already
+uses the L1 cache on these GPUs).
+
 ## Testing
 
 ```bash

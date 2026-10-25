@@ -63,9 +63,10 @@ def emit_address(em: PtxEmitter, buffer: str, offset: str, elem_bytes: int) -> s
     if buffer in em.smem_base:
         return int_op(em, "+", em.smem_base[buffer], int_op(em, "*", offset, str(elem_bytes)))
     if is_imm(offset):
-        return emit_reg(em, "rd", f"add.s64 {em.buffers[buffer]}, {int(offset) * elem_bytes}")
-    wide = emit_reg(em, "rd", f"mul.wide.s32 {offset}, {elem_bytes}")
-    return emit_reg(em, "rd", f"add.s64 {em.buffers[buffer]}, {wide}")
+        return em.cached(("addr", buffer, offset), lambda: emit_reg(
+            em, "rd", f"add.s64 {em.buffers[buffer]}, {int(offset) * elem_bytes}"))
+    wide = em.cached(("wide", offset, elem_bytes), lambda: emit_reg(em, "rd", f"mul.wide.s32 {offset}, {elem_bytes}"))
+    return em.cached(("addr", buffer, wide), lambda: emit_reg(em, "rd", f"add.s64 {em.buffers[buffer]}, {wide}"))
 
 
 def vector_suffix(n: int, nbytes: int) -> str:

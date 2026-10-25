@@ -60,5 +60,7 @@ and no pip in `.venv`; tests use `unittest`. macOS: no `timeout`, BSD `sed -i` n
   `log_softmax`, or layernorm as one kernel. Schedule knobs (`EMMY_KNOBS`, e.g. `STAGE=d2/smem-async`,
   `WORK=t256,REDUCE=coop`) select other IR shapes; `STAGE=...smem-tma` needs `--target sm_120` and cannot be packaged
   by `generate.py`.
-- Performance: `submit.py` times one cold launch (launch overhead dominates); use `tools/bench.py` for warm timings.
+- Performance: `submit.py` times one cold launch (launch overhead dominates); use `tools/bench.py`. Index math is
+  value-numbered (`int_op`), static innermost loops unroll x4, and multiply-add may fuse when `meta.json` has a
+  non-zero tolerance. `ptxas` already does plain CSE and LICM on clean code; measure before adding anything.
 - Unsupported constructs raise `NotImplementedError` naming the construct; never emit guessed PTX.

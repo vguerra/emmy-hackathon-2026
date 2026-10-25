@@ -31,6 +31,9 @@ UNOPS = {
     "r": {"abs": "abs.s32", "negative": "neg.s32"},
     "rd": {"abs": "abs.s64", "negative": "neg.s64"},
 }
+# Without .rn ptxas may contract a multiply feeding an add into one fma, which rounds once instead
+# of twice. Allowed only when the problem's tolerance is non-zero (see compile_ir).
+CONTRACTABLE = {"add": "add.f32", "subtract": "sub.f32", "multiply": "mul.f32"}
 MOVES = {"f": "mov.f32", "d": "mov.f64", "r": "mov.s32", "rd": "mov.s64"}
 SELECTS = {"f": "selp.f32", "d": "selp.f64", "r": "selp.s32", "rd": "selp.s64"}
 COMPARES = {"greater": "gt", "less": "lt", "greater_equal": "ge", "less_equal": "le",
@@ -108,6 +111,13 @@ F32_COMPOSED = {
 }
 
 
+def binop(em: PtxEmitter, cls: str, op: str) -> str:
+    """Opcode for binary `op` in register class `cls`, contractable when the tolerance allows."""
+    if cls == "f" and em.allow_fma and op in CONTRACTABLE:
+        return CONTRACTABLE[op]
+    return BINOPS[cls][op]
+
+
 def operand(em: PtxEmitter, name: str, target: Ty) -> str:
     """Register of SSA value `name`, converted when its register class differs from `target`'s.
     A same-class value is used as is: an f32 operand of an f16 op is not rounded to f16."""
@@ -138,7 +148,7 @@ def apply_op(em: PtxEmitter, op: str, args: list, result: Ty = None) -> tuple[st
         (cond, _), (a, ta), (b, tb) = args
         dst = emit_reg(em, cls, f"{SELECTS[cls]} {as_class(em, a, ta, kind)}, {as_class(em, b, tb, kind)}, {cond}")
     elif op in BINOPS[cls]:
-        dst = emit_reg(em, cls, f"{BINOPS[cls][op]} {regs[0]}, {regs[1]}")
+        dst = emit_reg(em, cls, f"{binop(em, cls, op)} {regs[0]}, {regs[1]}")
     elif op in UNOPS[cls]:
         dst = emit_reg(em, cls, f"{UNOPS[cls][op]} {regs[0]}")
     elif cls == "f" and op in F32_COMPOSED:

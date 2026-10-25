@@ -7,7 +7,7 @@ from tests.helpers import ROOT, lowered, run_integer_ptx
 from ptxgen.dtypes import BOOL, F16, F32, F64, I32
 from ptxgen.elementwise import apply_op
 from ptxgen.emitter import PtxEmitter, render
-from ptxgen.expr import emit_flat_offset, emit_int_expr, emit_pred
+from ptxgen.expr import emit_flat_offset, emit_int_expr, emit_pred, fold, int_op
 from ptxgen.memory import emit_swizzle, swizzle_params, vector_suffix
 
 
@@ -62,6 +62,73 @@ class IndexExpressions(unittest.TestCase):
     def test_index_rank_must_match_the_buffer(self):
         with self.assertRaises(NotImplementedError):
             emit_flat_offset(PtxEmitter(), (lit(0),), [4, 4])
+
+
+class IndexOptimizations(unittest.TestCase):
+    """Constant folding, algebraic identities and common-subexpression elimination of index math."""
+
+    def test_immediates_fold_with_c_division_semantics(self):
+        self.assertEqual(fold("*", 6, 7), 42)
+        self.assertEqual(fold("/", -7, 2), -3)          # truncates toward zero, like the GPU's div.s32
+        self.assertEqual(fold("%", -7, 2), -1)
+        self.assertIsNone(fold("/", 1, 0))
+
+    def test_identities_emit_nothing(self):
+        em = PtxEmitter()
+        self.assertEqual(int_op(em, "+", "%r1", "0"), "%r1")
+        self.assertEqual(int_op(em, "*", "1", "%r1"), "%r1")
+        self.assertEqual(int_op(em, "*", "%r1", "0"), "0")
+        self.assertEqual(int_op(em, "*", "6", "7"), "42")
+        self.assertEqual(em.lines, [])
+
+    def test_a_repeated_operation_is_emitted_once_and_commutes(self):
+        em = PtxEmitter()
+        first = int_op(em, "*", "%r1", "4")
+        second = int_op(em, "*", "4", "%r1")
+        self.assertEqual(first, second)
+        self.assertEqual(len(em.lines), 1)
+
+    def test_a_label_forgets_everything(self):
+        em = PtxEmitter()
+        int_op(em, "+", "%r1", "%r2")
+        em.label("L")
+        int_op(em, "+", "%r1", "%r2")
+        self.assertEqual(sum("add.s32" in line for line in em.lines), 2)
+
+
+class LoopUnrolling(unittest.TestCase):
+    def kernel_loops(self, problem, kernel):
+        from emmy.compiler.ir.stmt.blocks import Loop, StridedLoop
+        from ptxgen.loader import find_kernel, find_tile, load_ir
+        graph, _ = load_ir(str(ROOT / problem / f"{kernel}.ir.json"))
+        return find_tile(find_kernel(graph)).body.iter_of_type(Loop, StridedLoop)
+
+    def test_only_innermost_static_loops_unroll(self):
+        from ptxgen.control import UNROLL_FACTOR, static_range, unroll_factor
+        loops = self.kernel_loops("problems/m01_matmul_512", "k_matmul_2967be")
+        factors = {loop.axis.name: unroll_factor(loop, static_range(loop)) for loop in loops}
+        self.assertEqual(factors["_ki"], UNROLL_FACTOR)     # innermost, 64 trips
+        self.assertEqual(factors["_ks"], 1)                 # contains the _ki loop
+
+    def test_a_loop_with_a_runtime_start_is_left_alone(self):
+        from ptxgen.control import static_range, unroll_factor
+        loops = self.kernel_loops("problems/r04_row_sum", "k_sum_1_reduce")
+        self.assertTrue(all(unroll_factor(loop, static_range(loop)) == 1 for loop in loops))
+
+
+class FusedMultiplyAdd(unittest.TestCase):
+    def multiply(self, allow_fma):
+        em = PtxEmitter()
+        em.allow_fma = allow_fma
+        a, b = em.reg("f"), em.reg("f")
+        apply_op(em, "multiply", [(a, F32), (b, F32)])
+        return em.lines[0].strip()
+
+    def test_strict_by_default(self):
+        self.assertTrue(self.multiply(False).startswith("mul.rn.f32"))
+
+    def test_contractable_when_the_tolerance_allows(self):
+        self.assertTrue(self.multiply(True).startswith("mul.f32"))
 
 
 class Swizzle(unittest.TestCase):

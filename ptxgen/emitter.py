@@ -26,6 +26,8 @@ class PtxEmitter:
         self.frags = {}                                 # mma fragment name -> registers (a list, or a list per family member)
         self.target = PTX_TARGET                        # raised by statements that need a newer architecture
         self.tma_params = {}                            # tensor-map name -> its .param symbol
+        self.allow_fma = False                          # tolerance permits ptxas to fuse a multiply and an add
+        self.cse = {}                                   # (opcode, operands) -> register already holding that value
         self.label_count = 0
         self.dynamic_smem = False                       # shared arrays live in one extern array
         self.smem_used = 0                              # bytes handed out of it so far
@@ -48,6 +50,14 @@ class PtxEmitter:
 
     def label(self, name: str) -> None:
         self.lines.append(f"{name}:")
+        self.cse.clear()                                # control can reach here from elsewhere: nothing is known
+
+    def cached(self, key: tuple, emit) -> str:
+        """The register holding `key`'s value, emitting it with `emit()` only the first time.
+        Valid within straight-line code; any label forgets everything."""
+        if key not in self.cse:
+            self.cse[key] = emit()
+        return self.cse[key]
 
     def new_label(self, prefix: str) -> str:
         """A label name that is unique within the kernel."""
