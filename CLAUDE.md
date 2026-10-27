@@ -28,6 +28,7 @@ python tools/run_all.py [dir ...] [-k substr]            # compile + run + compa
 python tools/check_assembles.py                          # ptxas-only check of problems_asm/ (TMA)
 python tools/make_examples.py [--check]                  # regenerate / verify examples/compiled/
 python tools/bench.py <problem ...> [--json f | --compare f]   # warm median timing; use it before keeping an optimisation
+python tools/bandwidth.py <folder>                      # GB/s of large memory-bound problems (tools/expressions_bandwidth.py)
 python submit.py <problem-or-folder> --compiler compile.py
 python tools/generate.py tools/expressions_extra.py --emmy .venv/bin/emmy --out problems_extra --only <id>
 ```
