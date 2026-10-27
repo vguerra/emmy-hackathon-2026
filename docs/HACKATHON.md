@@ -9,7 +9,7 @@ CUDA C++ step. `ptxas` turns PTX into the same GPU binary ~19× faster than the 
 pipeline — Emmy's autotuner compiles thousands of kernel variants, so that middle step matters.
 
 You do **not** need a GPU. A hosted runner at `http://runner.riftstack.ai:48701` (the default in `submit.py`) compiles
-your PTX with `ptxas`, executes it on real hardware, and tells you whether the output is correct. See [docs/API.md](docs/API.md).
+your PTX with `ptxas`, executes it on real hardware, and tells you whether the output is correct. See [docs/API.md](API.md).
 
 ## Requirements
 
@@ -112,7 +112,7 @@ The video decides prize eligibility, as described above.
 problems/     the open set (15 problems)
 examples/     hand-written PTX with comments mapping each block back to the IR
 submit.py     one-command test: compile + run + check against expected outputs
-docs/API.md   the runner API, if you want to call it directly
+API.md        the runner API, if you want to call it directly
 tools/        how the problems were generated (emmy compile -c ... --ir cuda)
 TASK.md       the task, the categories, the CLI contract
 MVP.md        the minimum bar

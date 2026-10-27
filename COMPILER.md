@@ -123,6 +123,10 @@ Tried and dropped because they were slower or measured as no change:
   cost, not by shared-load issue slots. Removed rather than carry code with no measured gain.
 - `ld.global.nc` for read-only inputs (the plain load already uses the L1 cache on these GPUs).
 
+**Bandwidth.** `python tools/bandwidth.py <folder>` (problems from `tools/expressions_bandwidth.py`, 64 MiB buffers,
+past the L2) reports achieved GB/s: elementwise `a + b` 1676 GB/s (94% of the 5090's ~1792), `x*2+1` 1740 (97%),
+row sum 1591 (89%). A 16.8M-element full sum reaches 837 (47%): the IR fixes its grid at 64 blocks of 128 threads.
+
 **Full comparison.** [`docs/perf-comparison.md`](docs/perf-comparison.md) times every single-kernel problem (112) on the
 baseline commit `2fca374` and on the optimised compiler: 17 faster, 94 unchanged, 1 flagged slower (`f02_row_softmax`,
 3.0 to 3.6 µs, a launch-bound kernel, so timer noise), geometric mean 1.13x. The unchanged ones are launch-bound at
