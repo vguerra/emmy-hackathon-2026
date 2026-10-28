@@ -19,7 +19,7 @@ from emmy.compiler.ir.expr import Literal
 from emmy.compiler.ir.kernel.ir import (FragmentApply, FragmentRepack, FragmentRowReduce, LdmatrixLoad,
                                         MmaSyncPtx, RegFragment, RegStore)
 
-from .dtypes import BOOL, F16, F32, emit_convert, emit_reg, emit_shfl_xor, f32_imm, ty
+from .dtypes import BOOL, F16, F32, emit_convert, emit_reg, emit_shfl_xor, f32_imm
 from .elementwise import BINOPS, apply_op
 from .emitter import PtxEmitter
 from .expr import emit_flat_offset, emit_int_expr, emit_pred, int_op

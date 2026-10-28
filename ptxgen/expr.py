@@ -56,45 +56,51 @@ def int_op(em: PtxEmitter, op: str, left: str, right: str) -> str:
 
 def uses_var(expr: Expr, name: str) -> bool:
     """True when the expression mentions variable `name`."""
-    if isinstance(expr, Var):
-        return expr.name == name
-    if isinstance(expr, BinaryExpr):
-        return uses_var(expr.left, name) or uses_var(expr.right, name)
-    if isinstance(expr, TernaryExpr):
-        return any(uses_var(e, name) for e in (expr.cond, expr.if_true, expr.if_false))
-    return False
+    match expr:
+        case Var():
+            return expr.name == name
+        case BinaryExpr():
+            return uses_var(expr.left, name) or uses_var(expr.right, name)
+        case TernaryExpr():
+            return any(uses_var(e, name) for e in (expr.cond, expr.if_true, expr.if_false))
+        case _:
+            return False
 
 
 def emit_int_expr(em: PtxEmitter, expr: Expr) -> str:
     """Compile an integer index expression; returns a register or an immediate."""
-    if isinstance(expr, Var):
-        return em.vars[expr.name]
-    if isinstance(expr, Literal):
-        return str(int(expr.value))
-    if isinstance(expr, BinaryExpr) and expr.op in INT_BINOPS:
-        return int_op(em, expr.op, emit_int_expr(em, expr.left), emit_int_expr(em, expr.right))
-    if isinstance(expr, TernaryExpr):
-        pred = emit_pred(em, expr.cond)
-        if_true, if_false = emit_int_expr(em, expr.if_true), emit_int_expr(em, expr.if_false)
-        dst = em.reg("r")
-        em.emit(f"selp.s32 {dst}, {if_true}, {if_false}, {pred};")
-        return dst
-    raise NotImplementedError(f"index expression {expr!r}")
+    match expr:
+        case Var():
+            return em.vars[expr.name]
+        case Literal():
+            return str(int(expr.value))
+        case BinaryExpr() if expr.op in INT_BINOPS:
+            return int_op(em, expr.op, emit_int_expr(em, expr.left), emit_int_expr(em, expr.right))
+        case TernaryExpr():
+            pred = emit_pred(em, expr.cond)
+            if_true, if_false = emit_int_expr(em, expr.if_true), emit_int_expr(em, expr.if_false)
+            dst = em.reg("r")
+            em.emit(f"selp.s32 {dst}, {if_true}, {if_false}, {pred};")
+            return dst
+        case _:
+            raise NotImplementedError(f"index expression {expr!r}")
 
 
 def emit_pred(em: PtxEmitter, expr: Expr) -> str:
     """Compile a predicate expression into a predicate register."""
-    if isinstance(expr, BinaryExpr) and expr.op in PRED_CMPS:
-        left, right = emit_int_expr(em, expr.left), emit_int_expr(em, expr.right)
-        pred = em.reg("p")
-        em.emit(f"setp.{PRED_CMPS[expr.op]}.s32 {pred}, {left}, {right};")
-        return pred
-    if isinstance(expr, BinaryExpr) and expr.op in ("&&", "||"):
-        left, right = emit_pred(em, expr.left), emit_pred(em, expr.right)
-        pred = em.reg("p")
-        em.emit(f"{'and' if expr.op == '&&' else 'or'}.pred {pred}, {left}, {right};")
-        return pred
-    raise NotImplementedError(f"predicate {expr!r}")
+    match expr:
+        case BinaryExpr() if expr.op in PRED_CMPS:
+            left, right = emit_int_expr(em, expr.left), emit_int_expr(em, expr.right)
+            pred = em.reg("p")
+            em.emit(f"setp.{PRED_CMPS[expr.op]}.s32 {pred}, {left}, {right};")
+            return pred
+        case BinaryExpr() if expr.op in ("&&", "||"):
+            left, right = emit_pred(em, expr.left), emit_pred(em, expr.right)
+            pred = em.reg("p")
+            em.emit(f"{'and' if expr.op == '&&' else 'or'}.pred {pred}, {left}, {right};")
+            return pred
+        case _:
+            raise NotImplementedError(f"predicate {expr!r}")
 
 
 def emit_flat_offset(em: PtxEmitter, index: tuple, shape: list[int]) -> str:

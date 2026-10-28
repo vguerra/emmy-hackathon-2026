@@ -5,7 +5,7 @@ import math
 from emmy.compiler.ir.expr import Literal
 from emmy.compiler.ir.stmt.leaves import Assign, Let, Select
 
-from .dtypes import (BOOL, F16, F32, I32, Ty, emit_convert, emit_reg, f32_imm, imm, round_f16, ty)
+from .dtypes import (BOOL, F16, F32, I32, Ty, emit_convert, emit_reg, f32_imm, imm, ty)
 from .emitter import PtxEmitter
 from .expr import emit_int_expr, emit_pred
 

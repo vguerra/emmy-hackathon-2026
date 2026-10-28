@@ -213,68 +213,69 @@ def emit_tree_halve(em: PtxEmitter, stmt: TreeHalve, arg_types: dict) -> None:
 def emit_stmts(em: PtxEmitter, body, arg_types: dict) -> None:
     """Lower each statement of a body in order, dispatching on its kind."""
     for stmt in body:
-        if isinstance(stmt, Load):
-            emit_load(em, stmt, arg_types)
-        elif isinstance(stmt, Assign):
-            emit_assign(em, stmt)
-        elif isinstance(stmt, Let):
-            emit_let(em, stmt)
-        elif isinstance(stmt, Write):
-            emit_write(em, stmt, arg_types)
-        elif isinstance(stmt, StridedLoop):
-            emit_strided_loop(em, stmt, arg_types)
-        elif isinstance(stmt, TmaDescriptor):
-            emit_tma_descriptor(em, stmt)
-        elif isinstance(stmt, TmaLoad):
-            emit_tma_load(em, stmt, arg_types)
-        elif isinstance(stmt, MbarrierInit):
-            emit_mbarrier_init(em, stmt, arg_types)
-        elif isinstance(stmt, MbarrierArriveExpectTx):
-            emit_mbarrier_arrive_expect_tx(em, stmt, arg_types)
-        elif isinstance(stmt, MbarrierArrive):
-            emit_mbarrier_arrive(em, stmt, arg_types)
-        elif isinstance(stmt, MbarrierWait):
-            emit_mbarrier_wait(em, stmt, arg_types)
-        elif isinstance(stmt, RegFragment):
-            emit_reg_fragment(em, stmt)
-        elif isinstance(stmt, LdmatrixLoad):
-            emit_ldmatrix(em, stmt, arg_types)
-        elif isinstance(stmt, MmaSyncPtx):
-            emit_mma(em, stmt)
-        elif isinstance(stmt, FragmentApply):
-            emit_fragment_apply(em, stmt, arg_types)
-        elif isinstance(stmt, FragmentRowReduce):
-            emit_fragment_row_reduce(em, stmt)
-        elif isinstance(stmt, FragmentRepack):
-            emit_fragment_repack(em, stmt)
-        elif isinstance(stmt, RegStore):
-            emit_reg_store(em, stmt, arg_types)
-        elif isinstance(stmt, Select):
-            emit_select(em, stmt)
-        elif isinstance(stmt, Loop):
-            emit_loop(em, stmt, arg_types)
-        elif isinstance(stmt, Init):
-            emit_init(em, stmt)
-        elif isinstance(stmt, CpAsyncCopy):
-            emit_cp_async(em, stmt, arg_types)
-        elif isinstance(stmt, CpAsyncCommit):
-            em.emit("cp.async.commit_group;")
-        elif isinstance(stmt, CpAsyncWait):
-            em.emit(f"cp.async.wait_group {stmt.group};")
-        elif isinstance(stmt, Accum):
-            emit_accum(em, stmt)
-        elif isinstance(stmt, WarpShuffle):
-            emit_warp_shuffle(em, stmt)
-        elif isinstance(stmt, Smem):
-            emit_smem(em, stmt)
-        elif isinstance(stmt, Sync):
-            emit_sync(em, stmt)
-        elif isinstance(stmt, TreeHalve):
-            emit_tree_halve(em, stmt, arg_types)
-        elif isinstance(stmt, Cond):
-            emit_cond(em, stmt, arg_types)
-        else:
-            raise NotImplementedError(f"statement {type(stmt).__name__}")
+        match stmt:
+            case Load():
+                emit_load(em, stmt, arg_types)
+            case Assign():
+                emit_assign(em, stmt)
+            case Let():
+                emit_let(em, stmt)
+            case Write():
+                emit_write(em, stmt, arg_types)
+            case StridedLoop():
+                emit_strided_loop(em, stmt, arg_types)
+            case TmaDescriptor():
+                emit_tma_descriptor(em, stmt)
+            case TmaLoad():
+                emit_tma_load(em, stmt, arg_types)
+            case MbarrierInit():
+                emit_mbarrier_init(em, stmt, arg_types)
+            case MbarrierArriveExpectTx():
+                emit_mbarrier_arrive_expect_tx(em, stmt, arg_types)
+            case MbarrierArrive():
+                emit_mbarrier_arrive(em, stmt, arg_types)
+            case MbarrierWait():
+                emit_mbarrier_wait(em, stmt, arg_types)
+            case RegFragment():
+                emit_reg_fragment(em, stmt)
+            case LdmatrixLoad():
+                emit_ldmatrix(em, stmt, arg_types)
+            case MmaSyncPtx():
+                emit_mma(em, stmt)
+            case FragmentApply():
+                emit_fragment_apply(em, stmt, arg_types)
+            case FragmentRowReduce():
+                emit_fragment_row_reduce(em, stmt)
+            case FragmentRepack():
+                emit_fragment_repack(em, stmt)
+            case RegStore():
+                emit_reg_store(em, stmt, arg_types)
+            case Select():
+                emit_select(em, stmt)
+            case Loop():
+                emit_loop(em, stmt, arg_types)
+            case Init():
+                emit_init(em, stmt)
+            case CpAsyncCopy():
+                emit_cp_async(em, stmt, arg_types)
+            case CpAsyncCommit():
+                em.emit("cp.async.commit_group;")
+            case CpAsyncWait(group=group):
+                em.emit(f"cp.async.wait_group {group};")
+            case Accum():
+                emit_accum(em, stmt)
+            case WarpShuffle():
+                emit_warp_shuffle(em, stmt)
+            case Smem():
+                emit_smem(em, stmt)
+            case Sync():
+                emit_sync(em, stmt)
+            case TreeHalve():
+                emit_tree_halve(em, stmt, arg_types)
+            case Cond():
+                emit_cond(em, stmt, arg_types)
+            case _:
+                raise NotImplementedError(f"statement {type(stmt).__name__}")
 
 
 def emit_body(em: PtxEmitter, tile: Tile, arg_types: dict) -> None:
