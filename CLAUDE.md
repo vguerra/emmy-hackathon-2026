@@ -13,7 +13,7 @@ python compile.py path/to/<kernel>.ir.json > out.ptx   # PTX only on stdout; deb
 It is run mechanically against a hidden set of IRs in five categories (pointwise, reductions, matmul, fused,
 attention-like); the organisers say the problem set is a baseline filter and submissions are then reviewed by hand,
 with extra credit for tensor cores, other copy engines and data types, and for tests, examples and a clear feature
-list. `COMPILER.md` is that feature list; keep it accurate when behaviour changes. Deadline: 23:59 AoE Tue Oct 27
+list. `COMPILER.md` is that feature list; keep it accurate when behaviour changes. Deadline: 23:59 AoE Wed Oct 28
 (public GitHub repo plus a 3-5 minute video).
 
 `TASK.md` holds the full IR statement/expression reference (nodes marked `*` are absent from the open and hidden

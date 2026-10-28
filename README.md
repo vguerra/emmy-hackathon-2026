@@ -138,4 +138,4 @@ movement.
 | `examples/compiled/` | generated PTX beside its IR |
 | `tests/` | offline unit tests and PTX lint |
 | `tools/` | `run_all.py`, `bench.py`, `bandwidth.py`, `compare_commits.py`, `generate.py`, `make_examples.py`, `check_assembles.py` |
-| `docs/` | `perf-comparison.md`, the organisers' README and API notes |
+| `docs/` | `IR-REFERENCE.md`, `perf-comparison.md`, the organisers' README and API notes |
